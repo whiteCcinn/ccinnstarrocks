@@ -13,8 +13,10 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
 
     enum Reply: Sendable {
         case packets([[UInt8]])
-        /// Never answers (until the transport is closed).
+        /// Never answers (until the transport is closed or the query is interrupted).
         case hang
+        /// Answers after a delay (or earlier with an "interrupted" error when killed).
+        case delayed([[UInt8]], seconds: Double)
     }
 
     private struct State {
@@ -26,6 +28,8 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
         var handshakeResponse: [UInt8] = []
         var authSwitchReply: [UInt8] = []
         var queries: [String] = []
+        var queryGeneration = 0
+        var pendingQuery = false
     }
 
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
@@ -82,6 +86,15 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
         receiver?.resume(throwing: StarRocksError(.connectionClosed, "closed"))
     }
 
+    /// Simulates `KILL QUERY` from another connection: the running statement fails with 1317.
+    func interrupt() {
+        let pending = state.withLockUnchecked { state -> Bool in
+            defer { state.pendingQuery = false }
+            return state.pendingQuery
+        }
+        if pending { enqueue([Self.error(code: 1317, state: "70100", message: "Query execution was interrupted")], firstSequence: 1) }
+    }
+
     // MARK: Protocol
 
     private func handle(_ packet: PacketFramer.Packet) {
@@ -122,9 +135,27 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
                     enqueue([Self.ok()], firstSequence: 1)
                     return
                 }
+                let generation = state.withLockUnchecked { state -> Int in
+                    state.queryGeneration += 1
+                    state.pendingQuery = true
+                    return state.queryGeneration
+                }
                 switch handler(sql) {
-                case let .packets(packets): enqueue(packets, firstSequence: 1)
-                case .hang: break
+                case let .packets(packets):
+                    state.withLockUnchecked { $0.pendingQuery = false }
+                    enqueue(packets, firstSequence: 1)
+                case .hang:
+                    break
+                case let .delayed(packets, seconds):
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(Int(seconds * 1000)))
+                        let stillPending = self.state.withLockUnchecked { state -> Bool in
+                            guard state.pendingQuery, state.queryGeneration == generation else { return false }
+                            state.pendingQuery = false
+                            return true
+                        }
+                        if stillPending { self.enqueue(packets, firstSequence: 1) }
+                    }
                 }
             case 0x0E:
                 enqueue([Self.ok()], firstSequence: 1)

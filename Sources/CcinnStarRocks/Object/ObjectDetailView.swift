@@ -700,7 +700,7 @@ private struct DDLSection: View {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
                     Button {
-                        model.workspace.openSQL(text: ddl, database: model.object.database)
+                        model.workspace.openSQL(text: ddl, database: model.object.database, catalog: model.object.catalog)
                     } label: {
                         Label("Open in Editor", systemImage: "square.and.pencil")
                     }

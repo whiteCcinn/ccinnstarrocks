@@ -111,7 +111,7 @@ private struct DatabaseRow: View {
                 }
             }
             .contextMenu {
-                Button("New Query") { workspace.openSQL(database: database) }
+                Button("New Query") { workspace.openSQL(database: database, catalog: workspace.selectedCatalog) }
                 Button("Refresh") { workspace.loadObjects(database: database, force: true) }
                 Divider()
                 Button("Loads") { workspace.openOperations(section: .loads) }
@@ -194,7 +194,7 @@ private struct ObjectRow: View {
             Button("Open") { workspace.openObject(object) }
             if object.kind != .syncMaterializedView {
                 Button("Query in New Tab") {
-                    workspace.openSQL(text: "SELECT *\nFROM \(object.qualifiedName)\nLIMIT 100;", database: object.database, run: true)
+                    workspace.openSQL(text: "SELECT *\nFROM \(object.qualifiedName)\nLIMIT 100;", database: object.database, catalog: object.catalog, run: true)
                 }
             }
             if object.kind.hasNativeStorage {

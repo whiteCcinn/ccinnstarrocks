@@ -20,6 +20,7 @@ public enum SQLErrorLocator {
         guard currentLine == line else { return nil }
         var lineEnd = lineStart
         while lineEnd < units.count, units[lineEnd] != 0x0A { lineEnd += 1 }
-        return min(lineStart + max(0, column), max(lineStart, lineEnd))
+        // `column` comes from server text and may be absurdly large; clamp before adding.
+        return lineStart + min(max(0, column), lineEnd - lineStart)
     }
 }

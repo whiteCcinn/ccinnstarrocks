@@ -10,7 +10,12 @@ public actor SQLSession {
     public private(set) var catalog: String?
     /// Server connection id of the statement currently running, if any.
     public private(set) var runningConnectionID: UInt32?
-    private var cancelRequested = false
+    /// Increases with every statement, so a late cancel never touches a newer run on the same connection.
+    private var runGeneration: UInt64 = 0
+    private var cancelledGeneration: UInt64?
+    /// Session-level `SET` statements replayed after a reconnect (bounded).
+    private var sessionSettings: [String] = []
+    private static let maxSessionSettings = 64
 
     init(client: StarRocksClient, database: String?, catalog: String?) {
         self.client = client
@@ -21,43 +26,48 @@ public actor SQLSession {
     /// Runs one statement (or a server-side multi-statement batch) and returns all of its results.
     public func run(_ sql: String, limits: RowLimits = RowLimits()) async throws -> [ResultSet] {
         let connection = try await ensureConnection()
+        runGeneration &+= 1
+        let generation = runGeneration
         runningConnectionID = connection.connectionID
-        cancelRequested = false
-        defer { runningConnectionID = nil }
+        defer { if runGeneration == generation { runningConnectionID = nil } }
         do {
             let results = try await connection.query(sql, limits: limits)
             if await connection.isBroken {
                 // An oversized result was abandoned: drop the socket and stop the server-side work.
-                self.connection = nil
+                if self.connection === connection { self.connection = nil }
                 client.killQueryInBackground(connectionID: connection.connectionID)
             }
             noteContextChange(sql)
             return results
         } catch let error as StarRocksError {
             if await connection.isBroken {
-                self.connection = nil
+                if self.connection === connection { self.connection = nil }
                 if error.kind == .cancelled { client.killQueryInBackground(connectionID: connection.connectionID) }
             }
-            if cancelRequested, error.isQueryInterrupted {
+            if cancelledGeneration == generation, error.isQueryInterrupted || error.kind == .connectionClosed || error.kind == .network {
                 throw StarRocksError.cancelled()
             }
             throw error
         }
     }
 
-    /// Asks the server to stop the running statement (`KILL QUERY`). If the server does not stop it
-    /// within `graceSeconds`, the socket is closed.
+    /// Asks the server to stop the running statement (`KILL QUERY`). If that statement is still
+    /// running after `graceSeconds`, its socket is closed.
     public func cancel(graceSeconds: Double = 5) async {
         guard let id = runningConnectionID, let connection else { return }
-        cancelRequested = true
+        let generation = runGeneration
+        cancelledGeneration = generation
         do {
             try await client.killQuery(connectionID: id)
         } catch {
             connection.forceClose()
             return
         }
-        try? await Task.sleep(for: .milliseconds(Int(graceSeconds * 1000)))
-        if runningConnectionID == id { connection.forceClose() }
+        let grace = graceSeconds.isFinite ? min(max(0, graceSeconds), 60) : 5
+        try? await Task.sleep(for: .milliseconds(Int(grace * 1000)))
+        if runGeneration == generation, runningConnectionID == id, self.connection === connection {
+            connection.forceClose()
+        }
     }
 
     public func close() async {
@@ -70,11 +80,15 @@ public actor SQLSession {
     private func ensureConnection() async throws -> MySQLConnection {
         if let connection, await !connection.isBroken { return connection }
         let fresh = try await client.makeSessionConnection(database: database, catalog: catalog)
+        // Restore session variables the user set before the reconnect (best effort).
+        for setting in sessionSettings {
+            _ = try? await fresh.execute(setting)
+        }
         connection = fresh
         return fresh
     }
 
-    /// Tracks `USE db`, `USE catalog.db` and `SET CATALOG c` so a reconnect restores the context.
+    /// Tracks `USE db`, `USE catalog.db`, `SET CATALOG c` and session `SET`s so a reconnect restores them.
     private func noteContextChange(_ sql: String) {
         guard let change = SessionContextChange.parse(sql) else { return }
         switch change {
@@ -84,6 +98,9 @@ public actor SQLSession {
         case let .setCatalog(newCatalog):
             catalog = newCatalog
             database = nil
+        case let .sessionVariable(statement):
+            sessionSettings.append(statement)
+            if sessionSettings.count > Self.maxSessionSettings { sessionSettings.removeFirst(sessionSettings.count - Self.maxSessionSettings) }
         }
     }
 }
@@ -92,6 +109,8 @@ public actor SQLSession {
 public enum SessionContextChange: Equatable, Sendable {
     case use(catalog: String?, database: String)
     case setCatalog(String)
+    /// A session-scoped `SET` (variables, `SET ROLE`) worth replaying after a reconnect.
+    case sessionVariable(String)
 
     public static func parse(_ sql: String) -> SessionContextChange? {
         var text = sql.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -108,6 +127,14 @@ public enum SessionContextChange: Equatable, Sendable {
         if lowered.hasPrefix("set catalog ") {
             let parts = identifierPath(String(text.dropFirst(12)))
             return parts.count == 1 ? .setCatalog(parts[0]) : nil
+        }
+        if lowered.hasPrefix("set ") {
+            // Global and account-level settings persist on the server and must not be replayed.
+            let words = lowered.split(whereSeparator: \.isWhitespace)
+            let second = words.count > 1 ? String(words[1]) : ""
+            let excluded = ["global", "password", "default", "property", "transaction"]
+            if excluded.contains(second) || lowered.contains("@@global.") { return nil }
+            return .sessionVariable(text)
         }
         return nil
     }

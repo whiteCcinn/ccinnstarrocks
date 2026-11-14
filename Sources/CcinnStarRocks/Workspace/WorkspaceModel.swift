@@ -85,6 +85,8 @@ final class WorkspaceModel {
     init(profile: ConnectionProfile, client: StarRocksClient) {
         self.profile = profile
         self.client = client
+        let defaultCatalog = profile.defaultCatalog?.trimmingCharacters(in: .whitespaces) ?? ""
+        selectedCatalog = defaultCatalog.isEmpty ? SQLText.defaultCatalog : defaultCatalog
         history = QueryHistoryStore(directory: AppServices.shared.historyDirectory, profileID: profile.id)
     }
 
@@ -197,7 +199,11 @@ final class WorkspaceModel {
 
     // MARK: Completion schema
 
-    func completionSnapshot(currentDatabase: String?) -> SchemaSnapshot {
+    /// Schema for completion in `catalog`. Sidebar metadata is only used when it belongs to that catalog.
+    func completionSnapshot(currentDatabase: String?, catalog: String) -> SchemaSnapshot {
+        guard catalog == selectedCatalog else {
+            return SchemaSnapshot(currentCatalog: catalog, currentDatabase: currentDatabase, catalogs: catalogs.map(\.name))
+        }
         var objectsByDatabase: [String: [SchemaSnapshot.ObjectEntry]] = [:]
         for (database, state) in databaseStates {
             if case let .loaded(objects) = state {
@@ -209,10 +215,13 @@ final class WorkspaceModel {
     }
 
     /// Loads what completion reported as missing: object lists and (whole-database) column lists.
-    func ensureSchema(columns keys: [TableKey], databases missingDatabases: [String]) async {
+    func ensureSchema(columns keys: [TableKey], databases missingDatabases: [String], catalog: String) async {
+        // Object lists come from the sidebar's catalog; column lists from the internal information_schema.
+        guard catalog == selectedCatalog else { return }
         for database in Set(missingDatabases) {
             _ = await awaitObjects(database: database)
         }
+        guard catalog == SQLText.defaultCatalog else { return }
         for database in Set(keys.map(\.database)) {
             if let running = columnLoads[database] {
                 await running.value
@@ -248,10 +257,10 @@ final class WorkspaceModel {
     }
 
     @discardableResult
-    func openSQL(text: String = "", database: String? = nil, run: Bool = false) -> SQLTabModel {
+    func openSQL(text: String = "", database: String? = nil, catalog: String? = nil, run: Bool = false) -> SQLTabModel {
         sqlTabCounter += 1
-        let defaultDatabase = database ?? sidebarDatabaseHint
-        let model = SQLTabModel(title: "Query \(sqlTabCounter)", text: text, database: defaultDatabase, workspace: self)
+        let context = catalog.map { ($0, database) } ?? sidebarContextHint(database: database)
+        let model = SQLTabModel(title: "Query \(sqlTabCounter)", text: text, database: context.1, catalog: context.0, workspace: self)
         let tab = WorkspaceTab(kind: .sql(model))
         tabs.append(tab)
         selectedTabID = tab.id
@@ -304,11 +313,13 @@ final class WorkspaceModel {
         }
     }
 
-    /// Database for new SQL tabs: the open object's, the expanded one, or the profile default.
-    private var sidebarDatabaseHint: String? {
-        if case let .object(model)? = selectedTab?.kind { return model.object.database }
-        if case let .sql(model)? = selectedTab?.kind { return model.database }
-        return profile.defaultDatabase ?? expandedDatabases.sorted().first
+    /// Catalog and database for new SQL tabs: the open object's, the current tab's, or the sidebar's.
+    private func sidebarContextHint(database: String?) -> (String, String?) {
+        if let database { return (selectedCatalog, database) }
+        if case let .object(model)? = selectedTab?.kind { return (model.object.catalog, model.object.database) }
+        if case let .sql(model)? = selectedTab?.kind { return (model.catalog, model.database) }
+        let preferred = profile.defaultDatabase.flatMap { name in databases.contains(name) ? name : nil }
+        return (selectedCatalog, preferred ?? expandedDatabases.sorted().first)
     }
 
     // MARK: Feedback

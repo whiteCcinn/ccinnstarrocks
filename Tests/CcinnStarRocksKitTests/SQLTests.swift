@@ -237,3 +237,12 @@ struct ErrorLocatorTests {
         #expect(SQLErrorLocator.offset(in: "select 1", message: "at line 1, column 99") == 8)
     }
 }
+
+@Suite("Error location bounds")
+struct ErrorLocatorBoundsTests {
+    @Test func hugeColumnsDoNotOverflow() {
+        let statement = "USE\n`x`"
+        #expect(SQLErrorLocator.offset(in: statement, message: "at line 2, column 9223372036854775807") == statement.utf16.count)
+        #expect(SQLErrorLocator.offset(in: statement, message: "at line 99999999999999999999, column 1") == nil)
+    }
+}

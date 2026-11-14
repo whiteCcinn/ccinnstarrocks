@@ -112,6 +112,7 @@ final class SQLTabModel {
     var text: String
     var selection = NSRange(location: 0, length: 0)
     private(set) var database: String?
+    private(set) var catalog: String
     var outcomes: [StatementOutcome] = []
     var selectedOutcomeID: UUID?
     var isRunning = false
@@ -138,12 +139,13 @@ final class SQLTabModel {
         set { UserDefaults.standard.set(newValue, forKey: "autoLimit") }
     }
 
-    init(title: String, text: String, database: String?, workspace: WorkspaceModel) {
+    init(title: String, text: String, database: String?, catalog: String, workspace: WorkspaceModel) {
         self.title = title
         self.text = text
         self.database = database
+        self.catalog = catalog
         self.workspace = workspace
-        session = workspace.client.openSession(database: database)
+        session = workspace.client.openSession(database: database, catalog: catalog)
         self.selection = NSRange(location: (text as NSString).length, length: 0)
     }
 
@@ -240,6 +242,7 @@ final class SQLTabModel {
             if let rowSet = outcome.rowSet { historyEntry.rowCount = rowSet.rows.count }
             historyEntry.affectedRows = results.reduce(0) { $0 &+ $1.affectedRows }
             database = await session.database
+            catalog = await session.catalog ?? SQLText.defaultCatalog
             if kind == .definition || kind == .use { refreshSidebar(after: sql) }
         } catch {
             outcome.errorMessage = describe(error)
@@ -259,7 +262,7 @@ final class SQLTabModel {
     }
 
     private func refreshSidebar(after sql: String) {
-        guard let database else { return }
+        guard let database, catalog == workspace.selectedCatalog else { return }
         if SessionContextChange.parse(sql) == nil { workspace.loadObjects(database: database, force: true) }
     }
 
@@ -268,8 +271,10 @@ final class SQLTabModel {
         guard !isRunning else { return }
         Task {
             do {
-                _ = try await session.run("USE \(SQLText.quoteIdentifier(name))")
+                // Databases in the menu belong to the sidebar's catalog.
+                _ = try await session.run("USE \(SQLText.qualified(workspace.selectedCatalog, name))")
                 database = await session.database
+                catalog = await session.catalog ?? SQLText.defaultCatalog
             } catch {
                 workspace.showToast(describe(error), isError: true)
             }
@@ -279,11 +284,11 @@ final class SQLTabModel {
     // MARK: Completion
 
     func completions(text: String, cursor: Int) async -> CompletionResult {
-        let database = self.database
-        var result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database))
+        let (database, catalog) = (self.database, self.catalog)
+        var result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database, catalog: catalog))
         if result.needsMoreSchema {
-            await workspace.ensureSchema(columns: result.missingColumns, databases: result.missingDatabases)
-            result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database))
+            await workspace.ensureSchema(columns: result.missingColumns, databases: result.missingDatabases, catalog: catalog)
+            result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database, catalog: catalog))
         }
         return result
     }

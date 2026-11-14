@@ -78,7 +78,10 @@ public final class StarRocksClient: Sendable {
                 if await connection.isBroken { killQueryInBackground(connectionID: connection.connectionID) }
                 return results
             } catch let error as StarRocksError {
-                if error.kind == .cancelled || error.kind == .timeout {
+                // Only a statement that was actually sent and then abandoned leaves work on the server; a
+                // connection that is still healthy goes back to the pool, so killing it would hit the
+                // next caller's query.
+                if error.kind == .cancelled || error.kind == .timeout, await connection.isBroken {
                     killQueryInBackground(connectionID: connection.connectionID)
                 }
                 throw error
@@ -94,9 +97,12 @@ public final class StarRocksClient: Sendable {
         return last
     }
 
-    /// Opens a dedicated session (keeps `USE`/`SET` state) for an editor tab.
+    /// Opens a dedicated session (keeps `USE`/`SET` state) for an editor tab. `nil` arguments start
+    /// in the profile's default catalog and database; afterwards the session tracks its own context.
     public func openSession(database: String? = nil, catalog: String? = nil) -> SQLSession {
-        SQLSession(client: self, database: database, catalog: catalog)
+        let catalog = catalog ?? configuration.catalog
+        let sameCatalog = (catalog ?? SQLText.defaultCatalog) == (configuration.catalog ?? SQLText.defaultCatalog)
+        return SQLSession(client: self, database: database ?? (sameCatalog ? configuration.database : nil), catalog: catalog)
     }
 
     // MARK: Kill
@@ -133,10 +139,12 @@ public final class StarRocksClient: Sendable {
         }
     }
 
+    /// Connects with exactly the session's context (no fallback to the profile's database, which may
+    /// not exist in the session's current catalog).
     func makeSessionConnection(database: String?, catalog: String?) async throws -> MySQLConnection {
         var sessionConfiguration = effectiveConfiguration
-        sessionConfiguration.database = database ?? effectiveConfiguration.database
-        sessionConfiguration.catalog = catalog ?? effectiveConfiguration.catalog
+        sessionConfiguration.database = database
+        sessionConfiguration.catalog = catalog
         return try await MySQLConnection.connect(sessionConfiguration, transportFactory: transportFactory)
     }
 }

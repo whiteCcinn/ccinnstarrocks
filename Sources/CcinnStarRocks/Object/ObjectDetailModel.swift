@@ -278,7 +278,7 @@ final class ObjectDetailModel {
     // MARK: Shortcuts
 
     func openQuery() {
-        workspace.openSQL(text: "SELECT *\nFROM \(object.qualifiedName)\nLIMIT 100;", database: object.database, run: true)
+        workspace.openSQL(text: "SELECT *\nFROM \(object.qualifiedName)\nLIMIT 100;", database: object.database, catalog: object.catalog, run: true)
     }
 
     func showTablets(partition: String?) {
