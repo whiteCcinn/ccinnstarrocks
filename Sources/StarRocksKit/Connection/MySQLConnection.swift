@@ -69,6 +69,7 @@ public actor MySQLConnection {
                                transportFactory: TransportFactory = Transports.network) async throws -> MySQLConnection {
         let endpoint = configuration.endpoint
         let timeout = max(1, configuration.connectTimeout)
+        if Task.isCancelled { throw StarRocksError.cancelled() }
         let transport = try await transportFactory(endpoint, TransportOptions(connectTimeout: timeout))
         // Handshake and session setup share one deadline; on timeout or cancellation the socket is closed.
         do {

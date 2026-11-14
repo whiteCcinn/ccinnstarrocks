@@ -44,6 +44,8 @@ public actor ConnectionPool {
 
     public func checkout() async throws -> MySQLConnection {
         guard !isClosed else { throw Self.closedError() }
+        // A cancelled caller must not reserve a slot for a connection nobody will use.
+        if Task.isCancelled { throw StarRocksError.cancelled() }
         while let connection = idle.popLast() {
             if await !connection.isBroken { return connection }
             liveConnectionIDs.remove(connection.connectionID)

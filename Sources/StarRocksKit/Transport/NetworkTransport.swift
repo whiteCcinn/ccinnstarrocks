@@ -17,6 +17,7 @@ final class NetworkTransport: ByteTransport, @unchecked Sendable {
 
 
     static func connect(to endpoint: Endpoint, options: TransportOptions) async throws -> NetworkTransport {
+        if Task.isCancelled { throw StarRocksError.cancelled() }
         guard (1...65_535).contains(endpoint.port), let port = NWEndpoint.Port(rawValue: UInt16(endpoint.port)) else {
             throw StarRocksError(.invalidArgument, "Invalid port \(endpoint.port)")
         }
@@ -38,7 +39,10 @@ final class NetworkTransport: ByteTransport, @unchecked Sendable {
     }
 
     private func start(timeout: Double) async throws {
-        let once = OSAllocatedUnfairLock(initialState: false)
+        // `done`: the continuation was resumed. `cancelled`: the task was cancelled, possibly before the
+        // continuation body ran (a cancelled NWConnection never reports another state, so the body must
+        // notice the flag itself instead of waiting for the timeout).
+        let once = OSAllocatedUnfairLock(initialState: (done: false, cancelled: false))
         let endpoint = self.endpoint
         let connection = self.connection
         let queue = self.queue
@@ -46,9 +50,9 @@ final class NetworkTransport: ByteTransport, @unchecked Sendable {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 @Sendable func finish(_ result: Result<Void, StarRocksError>) {
-                    let first = once.withLock { done -> Bool in
-                        defer { done = true }
-                        return !done
+                    let first = once.withLock { state -> Bool in
+                        defer { state.done = true }
+                        return !state.done
                     }
                     guard first else { return }
                     connection.stateUpdateHandler = nil
@@ -70,12 +74,17 @@ final class NetworkTransport: ByteTransport, @unchecked Sendable {
                     default: break
                     }
                 }
+                if once.withLock({ $0.cancelled }) {
+                    finish(.failure(StarRocksError.cancelled()))
+                    return
+                }
                 queue.asyncAfter(deadline: .now() + max(0.5, timeout)) {
                     finish(.failure(StarRocksError(.timeout, "Timed out after \(Int(timeout))s connecting to \(endpoint)")))
                 }
                 connection.start(queue: queue)
             }
         } onCancel: {
+            once.withLock { $0.cancelled = true }
             connection.cancel()
         }
     }

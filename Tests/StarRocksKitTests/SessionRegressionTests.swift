@@ -173,3 +173,28 @@ struct SessionRegressionTests {
         #expect(SessionContextChange.parse("set @@global.x = 1") == nil)
     }
 }
+
+@Suite("Cancelled connects")
+struct CancelledConnectTests {
+    @Test func preCancelledNetworkConnectFailsFast() async throws {
+        let started = ContinuousClock.now
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await Transports.network(Endpoint(host: "127.0.0.1", port: 9), TransportOptions(connectTimeout: 6))
+        }
+        await #expect { _ = try await task.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
+        #expect(ContinuousClock.now - started < .seconds(1))
+    }
+
+    @Test func cancelledCheckoutReservesNoSlot() async throws {
+        let cluster = FakeCluster { _ in .packets(FakeCluster.rows("ok")) }
+        let configuration = ConnectionConfiguration(endpoint: Endpoint(host: "fake"), username: "root", connectTimeout: 2)
+        let pool = ConnectionPool(maxSize: 1) { try await MySQLConnection.connect(configuration, transportFactory: cluster.transportFactory) }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await pool.checkout()
+        }
+        await #expect { _ = try await task.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
+        #expect(await pool.statistics.open == 0)
+    }
+}

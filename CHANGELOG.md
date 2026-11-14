@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-14
+
+### Fixed
+
+- A connection attempt started by an already-cancelled operation (for example a superseded refresh) no longer waits for the full connect timeout while holding a pool slot; it fails immediately as cancelled.
+
 ## [1.0.0] - 2026-11-14
 
 First public release.
@@ -21,5 +27,6 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/whiteCcinn/ccinnstarrocks/releases/tag/v1.0.0

@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="CcinnStarRocks"
 BUNDLE_ID="io.github.whiteccinn.ccinnstarrocks"
-VERSION="${CCINNSTARROCKS_VERSION:-1.0.0}"
+VERSION="${CCINNSTARROCKS_VERSION:-1.0.1}"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 ICON="$ROOT/Resources/AppIcon.icns"
