@@ -23,9 +23,22 @@ public struct CompletionResult: Sendable {
     /// Tables referenced by the statement whose columns are not in the snapshot yet; the app loads
     /// them and asks again.
     public let missingColumns: [TableKey]
+    /// Databases whose object lists are needed but not loaded yet.
+    public let missingDatabases: [String]
+
+    public init(replacementRange: Range<Int>, prefix: String, items: [CompletionItem], missingColumns: [TableKey] = [],
+                missingDatabases: [String] = []) {
+        self.replacementRange = replacementRange
+        self.prefix = prefix
+        self.items = items
+        self.missingColumns = missingColumns
+        self.missingDatabases = missingDatabases
+    }
+
+    public var needsMoreSchema: Bool { !missingColumns.isEmpty || !missingDatabases.isEmpty }
 
     public static func empty(at cursor: Int) -> CompletionResult {
-        CompletionResult(replacementRange: cursor..<cursor, prefix: "", items: [], missingColumns: [])
+        CompletionResult(replacementRange: cursor..<cursor, prefix: "", items: [])
     }
 }
 
@@ -86,15 +99,23 @@ public enum CompletionEngine {
 
         var candidates: [CompletionItem]
         var missing: [TableKey] = []
+        var missingDatabases: [String] = []
         if let last = before.last, isDot(last, lexer) {
             let qualifier = qualifierChain(before: before, lexer: lexer)
             (candidates, missing) = memberCandidates(qualifier: qualifier, scope: scope, schema: schema)
+            if let database = qualifier.first, qualifier.count == 1, schema.isDatabase(database), schema.objects(in: database) == nil {
+                missingDatabases.append(database)
+            }
         } else {
             let context = clauseContext(before: before, lexer: lexer)
             (candidates, missing) = contextCandidates(context, scope: scope, schema: schema)
+            if case .tableName = context, let current = schema.currentDatabase, schema.objects(in: current) == nil {
+                missingDatabases.append(current)
+            }
         }
         let ranked = rank(candidates, prefix: prefix, limit: limit)
-        return CompletionResult(replacementRange: replacementStart..<cursor, prefix: prefix, items: ranked, missingColumns: missing)
+        return CompletionResult(replacementRange: replacementStart..<cursor, prefix: prefix, items: ranked,
+                                missingColumns: missing, missingDatabases: missingDatabases)
     }
 
     // MARK: Scope analysis

@@ -31,11 +31,15 @@ extension StarRocksClient {
         }
     }
 
-    /// Size and rows per index (base + sync MVs).
+    /// Size and rows per index (base + sync MVs). The summary row `Total` is not an index and is dropped.
     public func storage(database: String, table: String) async throws -> [IndexStorage] {
         let result = try await execute("SHOW DATA FROM \(SQLText.qualified(database, table))")
-        return result.records.compactMap { record in
-            guard let index = record.text("IndexName") else { return nil }
+        return Self.indexStorage(result.records)
+    }
+
+    static func indexStorage(_ records: [Record]) -> [IndexStorage] {
+        records.compactMap { record in
+            guard let index = record.text("IndexName"), index != "Total" || record.text("TableName") != nil else { return nil }
             return IndexStorage(indexName: index, size: ByteSize.parse(record.text("Size")),
                                 replicaCount: record.int("ReplicaCount"), rowCount: record.int("RowCount"))
         }

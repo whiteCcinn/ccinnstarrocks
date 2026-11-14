@@ -20,7 +20,7 @@ public enum SQLStatementSplitter {
         return split(lexer: lexer, tokens: lexer.tokens())
     }
 
-    static func split(lexer: SQLLexer, tokens: [SQLToken]) -> [SQLStatement] {
+    public static func split(lexer: SQLLexer, tokens: [SQLToken]) -> [SQLStatement] {
         var statements: [SQLStatement] = []
         var firstSignificant: Int?
         var lastSignificantEnd = 0

@@ -224,3 +224,16 @@ struct CompletionTests {
         #expect(CompletionEngine.quoteIfNeeded("吉隆坡") == "`吉隆坡`")
     }
 }
+
+@Suite("Error location")
+struct ErrorLocatorTests {
+    @Test func mapsLineAndColumn() {
+        let statement = "SELECT *\nFROM shop.orders WHERE order_id = = 1"
+        let message = "Getting syntax error at line 2, column 32. Detail message: Unexpected input '='"
+        let offset = SQLErrorLocator.offset(in: statement, message: message)
+        #expect(offset == 9 + 32)
+        #expect(SQLErrorLocator.offset(in: "select 1", message: "Unknown table") == nil)
+        #expect(SQLErrorLocator.offset(in: "select 1", message: "at line 9, column 1") == nil)
+        #expect(SQLErrorLocator.offset(in: "select 1", message: "at line 1, column 99") == 8)
+    }
+}

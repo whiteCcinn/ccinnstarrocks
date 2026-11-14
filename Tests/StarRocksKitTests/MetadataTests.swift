@@ -116,6 +116,17 @@ struct InsightParsingTests {
         #expect(partition.cooldownTime == nil)
     }
 
+    @Test func storageDropsTheTotalRow() {
+        let rows = records(["TableName", "IndexName", "Size", "ReplicaCount", "RowCount"], [
+            ["orders", "mv_orders_by_channel", "43.158 KB", "52", "416"],
+            [nil, "orders", "198.654 KB", "52", "20000"],
+            [nil, "Total", "241.812 KB", "104", nil],
+        ])
+        let storage = StarRocksClient.indexStorage(rows)
+        #expect(storage.map(\.indexName) == ["mv_orders_by_channel", "orders"])
+        #expect(storage[1].rowCount == 20000)
+    }
+
     @Test func processesAndNodesTolerateVersionDifferences() {
         // 3.3 has no ServerName/QueryId; 4.1 adds them and uses large connection ids.
         let v33 = records(["Id", "User", "Command", "Time", "Info"], [["24", "root", "Query", "3", "select sleep(3)"]])

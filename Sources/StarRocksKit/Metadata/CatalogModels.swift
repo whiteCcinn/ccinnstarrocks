@@ -162,6 +162,12 @@ public struct CatalogInfo: Sendable, Hashable, Identifiable {
     public var type: String
     public var comment: String?
 
+    public init(name: String, type: String, comment: String? = nil) {
+        self.name = name
+        self.type = type
+        self.comment = comment
+    }
+
     public var id: String { name }
     public var isInternal: Bool { name == SQLText.defaultCatalog || type.lowercased() == "internal" }
 }
