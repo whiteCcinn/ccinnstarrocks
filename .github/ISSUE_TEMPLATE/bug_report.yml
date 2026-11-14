@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please do **not** include passwords or connection strings with credentials.
+        Security issues should be reported privately (see SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Connect to …
+        2. Open collection …
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: CcinnStarRocks version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: starrocks-version
+    attributes:
+      label: StarRocks version and deployment (shared-nothing / shared-data, FE/BE/CN count)
+      placeholder: "4.1.7, shared-nothing, 3 FE / 5 BE"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version and Mac type
+      placeholder: "macOS 15.2, Apple silicon"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or screenshots

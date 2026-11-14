@@ -2,6 +2,8 @@
 -- a synchronous rollup and an asynchronous materialized view.
 -- A cold FE can exceed the default 3 s planner budget on the first statements.
 SET new_planner_optimize_timeout = 60000;
+-- Background statistics jobs make small all-in-one test containers sluggish.
+ADMIN SET FRONTEND CONFIG ("enable_statistic_collect" = "false");
 CREATE DATABASE IF NOT EXISTS shop;
 USE shop;
 

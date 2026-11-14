@@ -13,6 +13,8 @@ public actor ConnectionPool {
 
     private var idle: [MySQLConnection] = []
     private var openCount = 0
+    /// Server connection ids of every connection this pool owns (idle or checked out).
+    private var liveConnectionIDs: Set<UInt32> = []
     private var waiters: [(id: UInt64, continuation: CheckedContinuation<MySQLConnection?, any Error>)] = []
     private var nextWaiterID: UInt64 = 0
     private var isClosed = false
@@ -23,6 +25,9 @@ public actor ConnectionPool {
     }
 
     public var statistics: (open: Int, idle: Int, waiting: Int) { (openCount, idle.count, waiters.count) }
+
+    /// Connection ids owned by this pool, used to hide the app's own metadata queries from activity views.
+    public var connectionIDs: Set<UInt32> { liveConnectionIDs }
 
     /// Runs `body` with an exclusively checked-out connection and always returns it to the pool.
     public nonisolated func withConnection<T: Sendable>(_ body: (MySQLConnection) async throws -> T) async throws -> T {
@@ -41,6 +46,7 @@ public actor ConnectionPool {
         guard !isClosed else { throw Self.closedError() }
         while let connection = idle.popLast() {
             if await !connection.isBroken { return connection }
+            liveConnectionIDs.remove(connection.connectionID)
             openCount -= 1
         }
         if openCount < maxSize {
@@ -64,6 +70,7 @@ public actor ConnectionPool {
         let broken = await connection.isBroken
         if isClosed || broken {
             if !broken { await connection.close() }
+            liveConnectionIDs.remove(connection.connectionID)
             openCount -= 1
             handOffFreedSlot()
             return
@@ -83,7 +90,10 @@ public actor ConnectionPool {
         let toClose = idle
         idle.removeAll()
         openCount -= toClose.count
-        for connection in toClose { await connection.close() }
+        for connection in toClose {
+            liveConnectionIDs.remove(connection.connectionID)
+            await connection.close()
+        }
         let pending = waiters
         waiters.removeAll()
         for waiter in pending { waiter.continuation.resume(throwing: Self.closedError()) }
@@ -110,6 +120,7 @@ public actor ConnectionPool {
             openCount -= 1
             throw Self.closedError()
         }
+        liveConnectionIDs.insert(connection.connectionID)
         return connection
     }
 

@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Skip if the release already has assets
+        id: check
+        run: |
+          count="$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)"
+          echo "assets=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        if: steps.check.outputs.assets == '0'
+        run: scripts/package-release.sh "${TAG#v}"
+
+      - name: Release notes
+        if: steps.check.outputs.assets == '0'
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md for details." > notes.md
+
+      - name: Publish
+        if: steps.check.outputs.assets == '0'
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "CcinnStarRocks $TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/*.dmg dist/*-macOS.zip dist/SHA256SUMS.txt

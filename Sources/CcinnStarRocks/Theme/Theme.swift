@@ -134,9 +134,18 @@ extension NSColor {
 }
 
 enum Format {
+    /// Trap-free Double → Int64 (NaN/±inf/out-of-range values are clamped).
+    static func int64(_ value: Double) -> Int64 {
+        guard value.isFinite else { return 0 }
+        if value >= 9.223_372_036_854_775e18 { return .max }
+        if value <= -9.223_372_036_854_775e18 { return .min }
+        return Int64(value)
+    }
+
     static func bytes(_ value: Int64?) -> String {
         guard let value else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: max(0, value), countStyle: .binary)
+        guard value > 0 else { return "0 B" }
+        return ByteCountFormatter.string(fromByteCount: value, countStyle: .binary)
     }
 
     static func count(_ value: Int64?) -> String {

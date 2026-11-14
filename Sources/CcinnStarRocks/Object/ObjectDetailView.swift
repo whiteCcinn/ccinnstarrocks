@@ -413,7 +413,7 @@ private struct PartitionsSection: View {
             HStack(spacing: 12) {
                 StatTile(title: "Partitions", value: Format.count(partitions.count), systemImage: "square.split.bottomrightquarter")
                 StatTile(title: "Total size", value: Format.bytes(totalSize), systemImage: "internaldrive")
-                StatTile(title: "Total rows", value: Format.count(totalRows), systemImage: "number")
+                StatTile(title: model.rollups.isEmpty ? "Total rows" : "Rows (incl. sync MVs)", value: Format.count(totalRows), systemImage: "number")
                 StatTile(title: "Largest", value: largest.map { "\($0.name) · \(Format.bytes($0.dataSize))" } ?? "—", systemImage: "arrow.up.right")
             }
             Card {
@@ -438,7 +438,7 @@ private struct PartitionsSection: View {
                             AxisGridLine()
                             AxisValueLabel {
                                 if let number = value.as(Double.self) {
-                                    Text(metric == .size ? Format.bytes(Int64(number)) : Int64(number).formatted(.number.notation(.compactName)))
+                                    Text(metric == .size ? Format.bytes(Format.int64(number)) : Format.int64(number).formatted(.number.notation(.compactName)))
                                 }
                             }
                         }
@@ -531,7 +531,7 @@ private struct TabletReport: View {
             HStack(spacing: 12) {
                 StatTile(title: "Tablets", value: Format.count(report.entries.count), systemImage: "square.grid.3x3")
                 StatTile(title: "Average \(report.metric == .dataSize ? "size" : "rows")",
-                         value: report.metric == .dataSize ? Format.bytes(Int64(report.average)) : Format.count(Int64(report.average)), systemImage: "equal")
+                         value: report.metric == .dataSize ? Format.bytes(Format.int64(report.average)) : Format.count(Format.int64(report.average)), systemImage: "equal")
                 StatTile(title: "Largest vs. average", value: String(format: "%.2f×", report.maxRatio), systemImage: "arrow.up.right",
                          tint: report.isSkewed ? .orange : .green)
                 StatTile(title: report.isSkewed ? "Skewed tablets" : "Skew", value: report.isSkewed ? "\(report.skewedCount)" : "Balanced",
@@ -561,6 +561,16 @@ private struct TabletReport: View {
                             .annotation(position: .top, alignment: .leading) {
                                 Text("\(String(format: "%.1f", report.threshold))× average").font(.caption2).foregroundStyle(.orange)
                             }
+                    }
+                    .chartYAxis {
+                        AxisMarks { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let number = value.as(Double.self) {
+                                    Text(report.metric == .dataSize ? Format.bytes(Format.int64(number)) : Format.int64(number).formatted(.number.notation(.compactName)))
+                                }
+                            }
+                        }
                     }
                     .chartXAxis(report.entries.count > 40 ? .hidden : .automatic)
                     .chartScrollableAxes(report.entries.count > 120 ? .horizontal : [])

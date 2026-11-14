@@ -80,7 +80,10 @@ extension StarRocksClient {
     /// Everything currently executing: statements, loads, MV/task runs, routine loads, schema changes.
     /// Sections the user may not see are reported in `unavailable` instead of failing the snapshot.
     public func activity(databases: [String]) async -> ActivitySnapshot {
-        async let processes = Self.capture { try await self.processList().filter(\.isRunningStatement) }
+        let internalIDs = await pool.connectionIDs
+        async let processes = Self.capture {
+            try await self.processList().filter { $0.isRunningStatement && !internalIDs.contains($0.connectionID) }
+        }
         async let loads = Self.capture { try await self.loads(activeOnly: true, limit: 500) }
         async let runs = Self.capture { try await self.taskRuns(states: ["RUNNING", "PENDING"], limit: 500) }
         async let routine = Self.capture { try await self.routineLoads().filter { !$0.isFinished } }
