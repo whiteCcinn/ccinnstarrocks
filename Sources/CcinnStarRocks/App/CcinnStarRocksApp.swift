@@ -42,6 +42,11 @@ private struct SettingsTabs: View {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Restored windows would only reopen the connection screen; start with one clean window.
+        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Behave like a regular app when launched from `swift run` (no bundle).
         NSApp.setActivationPolicy(.regular)
@@ -157,7 +162,8 @@ enum LaunchArguments {
             let host = parts.first.map(String.init) ?? "127.0.0.1"
             let port = parts.count > 1 ? Int(parts[1]) ?? 9030 : 9030
             profile = ConnectionProfile(name: "\(host):\(port)", host: host, port: port, username: value("--user") ?? "root",
-                                        defaultDatabase: value("--database"), color: .indigo)
+                                        defaultDatabase: value("--database"), color: .indigo,
+                                        connectTimeout: value("--connect-timeout").flatMap(Double.init) ?? 30)
             // Passwords never go on the command line (visible to other processes); use the environment.
             password = ProcessInfo.processInfo.environment["CCINNSTARROCKS_PASSWORD"] ?? ""
         } else {

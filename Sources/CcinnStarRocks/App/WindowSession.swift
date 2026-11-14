@@ -21,8 +21,18 @@ final class WindowSession {
         case connected(WorkspaceModel)
     }
 
-    var phase: Phase = .connections
+    var phase: Phase = .connections {
+        didSet { DebugLog.write("phase -> \(phaseName)") }
+    }
     var connectError: String?
+
+    private var phaseName: String {
+        switch phase {
+        case .connections: "connections"
+        case let .connecting(name, status): "connecting(\(name), \(status))"
+        case .connected: "connected"
+        }
+    }
     private var connectTask: Task<Void, Never>?
 
     var workspace: WorkspaceModel? {
@@ -53,6 +63,7 @@ final class WindowSession {
                 workspace.start()
                 then?(workspace)
             } catch {
+                DebugLog.write("connect failed: \(error) cancelled=\(Task.isCancelled)")
                 guard !Task.isCancelled else { return }
                 self.connectError = describe(error)
                 self.phase = .connections
@@ -72,6 +83,7 @@ final class WindowSession {
     }
 
     func disconnect() {
+        DebugLog.write("disconnect()")
         // A connect still in flight would otherwise finish later and leave a live client/tunnel behind.
         connectTask?.cancel()
         connectTask = nil
@@ -87,4 +99,14 @@ func describe(_ error: any Error) -> String {
         return error.message
     }
     return error.localizedDescription
+}
+
+/// `CCINNSTARROCKS_DEBUG=1` writes lifecycle events to stderr (development aid).
+enum DebugLog {
+    static let enabled = ProcessInfo.processInfo.environment["CCINNSTARROCKS_DEBUG"] == "1"
+
+    static func write(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        FileHandle.standardError.write(Data("[ccinnstarrocks] \(message())\n".utf8))
+    }
 }

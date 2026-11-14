@@ -115,6 +115,14 @@ struct ConnectionsView: View {
                 .id(draft.profileID ?? UUID())
         } else {
             WelcomeView(onNew: newConnection)
+                .overlay(alignment: .top) {
+                    // Errors from connects not started from the editor (e.g. deep links) must be visible too.
+                    if let error = session.connectError {
+                        ErrorBanner(message: error) { session.connectError = nil }
+                            .frame(maxWidth: 640)
+                            .padding(20)
+                    }
+                }
         }
     }
 
