@@ -170,13 +170,19 @@ final class ObjectDetailModel {
         run({ self.storage = $0 }) { try await self.client.storage(database: object.database, table: object.name) }
     }
 
+    private var tabletGeneration: UInt64 = 0
+
     func loadTablets() {
         guard object.kind.hasNativeStorage else { return }
         let (object, partition, index) = (object, tabletPartition, tabletIndex)
+        tabletGeneration &+= 1
+        let generation = tabletGeneration
         skew = nil
         run({ [weak self] state in
-            self?.tablets = state
-            if case let .loaded(replicas) = state { self?.skew = SkewAnalyzer.analyze(replicas) }
+            // A slower earlier request (other partition/index) must not overwrite the current one.
+            guard let self, self.tabletGeneration == generation else { return }
+            self.tablets = state
+            if case let .loaded(replicas) = state { self.skew = SkewAnalyzer.analyze(replicas) }
         }) { try await self.client.tablets(database: object.database, table: object.name, partition: partition, index: index) }
     }
 

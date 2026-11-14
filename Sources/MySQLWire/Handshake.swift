@@ -20,8 +20,10 @@ public struct Capabilities: OptionSet, Sendable, Hashable {
     public static let deprecateEOF = Capabilities(rawValue: 1 << 24)
 
     /// What this client asks for (intersected with the server's flags at handshake time).
+    /// Multi-statement mode is deliberately not requested: the app splits scripts itself, so a lexer
+    /// disagreement with the server can never turn one statement into several.
     public static let client: Capabilities = [.longPassword, .longFlag, .protocol41, .transactions, .secureConnection,
-                                              .multiStatements, .multiResults, .pluginAuth, .pluginAuthLenencData,
+                                              .multiResults, .pluginAuth, .pluginAuthLenencData,
                                               .connectWithDB, .connectAttrs]
 
     /// Assumed when parsing packets outside a negotiated session (tests, fuzzing).

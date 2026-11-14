@@ -134,11 +134,17 @@ struct SQLEditor: NSViewRepresentable {
 
         func observeScrolling(of scrollView: NSScrollView) {
             scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
+            observers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scrollView.contentView,
+                                                                    queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.highlightVisibleRange() }
+            })
             observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView,
                                                                     queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.ruler?.needsDisplay = true
                     self?.hideCompletions()
+                    self?.highlightVisibleRange()
                 }
             })
         }
@@ -169,57 +175,96 @@ struct SQLEditor: NSViewRepresentable {
             }
         }
 
+        /// Lexed tokens of the current text (UTF-16 ranges, sorted).
+        private var tokens: [SQLToken] = []
+        private var functionTokens = Set<Int>()
+        private var highlightedRange = NSRange(location: 0, length: 0)
+        private static let highlightLimit = 4_000_000
+
         func textChanged() {
             ruler?.textDidChange()
             rehighlight()
         }
 
+        /// Re-lexes the text (linear, no layout work) and recolours what is on screen. Colours are layout
+        /// manager temporary attributes, so typing never invalidates the layout of the whole document.
         func rehighlight() {
-            guard let textView, let storage = textView.textStorage else { return }
+            guard let textView else { return }
             let text = textView.string
-            let length = (text as NSString).length
             lastErrorOffset = parent.errorOffset
-            storage.beginEditing()
-            storage.setAttributes(Self.baseAttributes(fontSize: parent.fontSize), range: NSRange(location: 0, length: length))
-            if length < 400_000 {
+            let length = (text as NSString).length
+            if length <= Self.highlightLimit {
                 let lexer = SQLLexer(text)
-                let tokens = lexer.tokens()
+                tokens = lexer.tokens()
                 statements = SQLStatementSplitter.split(lexer: lexer, tokens: tokens)
-                let keywordFont = NSFont.monospacedSystemFont(ofSize: parent.fontSize, weight: .semibold)
-                for (index, token) in tokens.enumerated() {
-                    let range = token.nsRange
-                    guard NSMaxRange(range) <= length else { continue }
-                    switch token.kind {
-                    case .keyword:
-                        storage.addAttributes([.foregroundColor: NSColor.syntaxKeyword, .font: keywordFont], range: range)
-                    case .identifier:
-                        if index + 1 < tokens.count, lexer.text(of: tokens[index + 1]) == "(",
-                           SQLFunctions.names.contains(lexer.text(of: token).uppercased()) {
-                            storage.addAttribute(.foregroundColor, value: NSColor.syntaxFunction, range: range)
-                        }
-                    case .quotedIdentifier: storage.addAttribute(.foregroundColor, value: NSColor.syntaxQuoted, range: range)
-                    case .string: storage.addAttribute(.foregroundColor, value: NSColor.syntaxString, range: range)
-                    case .number: storage.addAttribute(.foregroundColor, value: NSColor.syntaxNumber, range: range)
-                    case .comment:
-                        storage.addAttribute(.foregroundColor, value: NSColor.syntaxComment, range: range)
-                    case .variable: storage.addAttribute(.foregroundColor, value: NSColor.syntaxVariable, range: range)
-                    case .operator, .punctuation: storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+                var functions = Set<Int>()
+                for index in tokens.indices.dropLast() where tokens[index].kind == .identifier {
+                    let next = tokens[index + 1]
+                    if next.kind == .punctuation, next.range.count == 1, lexer.units[next.range.lowerBound] == 0x28,
+                       SQLFunctions.names.contains(lexer.text(of: tokens[index]).uppercased()) {
+                        functions.insert(index)
                     }
                 }
+                functionTokens = functions
             } else {
-                statements = SQLStatementSplitter.split(text)
+                tokens = []
+                functionTokens = []
+                statements = []
             }
-            if let offset = parent.errorOffset, length > 0 {
-                let location = min(max(0, offset), length - 1)
-                let lineRange = (text as NSString).lineRange(for: NSRange(location: location, length: 0))
-                let end = min(NSMaxRange(lineRange), length)
-                let underline = NSRange(location: location, length: max(1, min(end - location, 32)))
-                storage.addAttributes([.underlineStyle: NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDot.rawValue,
-                                       .underlineColor: NSColor.systemRed], range: underline)
-            }
-            storage.endEditing()
+            highlightedRange = NSRange(location: 0, length: 0)
+            highlightVisibleRange(force: true)
             highlightedStatement = nil
             updateStatementHighlight()
+        }
+
+        /// Colours the visible characters (plus a margin). Called after edits and when scrolling.
+        func highlightVisibleRange(force: Bool = false) {
+            guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
+            let length = (textView.string as NSString).length
+            let glyphs = layoutManager.glyphRange(forBoundingRect: textView.visibleRect, in: container)
+            let visible = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            let start = max(0, visible.location - 4_000)
+            let end = min(length, NSMaxRange(visible) + 4_000)
+            let target = NSRange(location: start, length: max(0, end - start))
+            if !force, NSLocationInRange(visible.location, highlightedRange), NSMaxRange(visible) <= NSMaxRange(highlightedRange) { return }
+            highlightedRange = target
+            for key in [NSAttributedString.Key.foregroundColor, .underlineStyle, .underlineColor] {
+                layoutManager.removeTemporaryAttribute(key, forCharacterRange: target)
+            }
+            // First token that ends after `start` (binary search).
+            var low = 0
+            var high = tokens.count
+            while low < high {
+                let mid = (low + high) / 2
+                if tokens[mid].range.upperBound <= start { low = mid + 1 } else { high = mid }
+            }
+            var index = low
+            while index < tokens.count, tokens[index].range.lowerBound < end {
+                let token = tokens[index]
+                let color: NSColor? = switch token.kind {
+                case .keyword: .syntaxKeyword
+                case .identifier: functionTokens.contains(index) ? .syntaxFunction : nil
+                case .quotedIdentifier: .syntaxQuoted
+                case .string: .syntaxString
+                case .number: .syntaxNumber
+                case .comment: .syntaxComment
+                case .variable: .syntaxVariable
+                case .operator, .punctuation: .secondaryLabelColor
+                }
+                if let color, token.range.upperBound <= length {
+                    layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.nsRange)
+                }
+                index += 1
+            }
+            if let offset = parent.errorOffset, length > 0 {
+                let text = textView.string as NSString
+                let location = min(max(0, offset), length - 1)
+                let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
+                let lineEnd = min(NSMaxRange(lineRange), length)
+                let underline = NSRange(location: location, length: max(1, min(lineEnd - location, 32)))
+                layoutManager.addTemporaryAttributes([.underlineStyle: NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDot.rawValue,
+                                                      .underlineColor: NSColor.systemRed], forCharacterRange: underline)
+            }
         }
 
         private func updateStatementHighlight() {

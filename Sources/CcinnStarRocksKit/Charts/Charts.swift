@@ -333,15 +333,22 @@ public enum ChartDataBuilder {
             }
         }
         let values = points.compactMap { numeric($0.x) }
-        guard let lower = values.min(), let upper = values.max(), upper > lower else { return Array(points.prefix(budget)) }
         let bucketCount = max(1, budget / seriesCount)
+        guard let lower = values.min(), let upper = values.max(), upper > lower,
+              (upper - lower).isFinite, (upper - lower) / Double(bucketCount) > 0 else {
+            // Degenerate or non-finite range (e.g. ±1.7e308 sentinels): sample evenly instead.
+            let stride = max(1, Int((Double(points.count) / Double(max(1, budget))).rounded(.up)))
+            return points.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
+        }
         let width = (upper - lower) / Double(bucketCount)
         let isDate: Bool = if case .date = points.first?.x { true } else { false }
         var bucketed: [Observation] = []
         bucketed.reserveCapacity(points.count)
         for point in points {
             guard let value = numeric(point.x) else { continue }
-            let index = Swift.min(bucketCount - 1, Int((value - lower) / width))
+            let position = (value - lower) / width
+            guard position.isFinite else { continue }
+            let index = Int(Swift.min(Swift.max(position, 0), Double(bucketCount - 1)))
             let start = lower + Double(index) * width
             bucketed.append((isDate ? .date(Date(timeIntervalSince1970: start)) : .number(start), point.y, point.series))
         }

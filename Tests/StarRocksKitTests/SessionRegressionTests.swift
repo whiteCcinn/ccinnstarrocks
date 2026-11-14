@@ -151,6 +151,20 @@ struct SessionRegressionTests {
         await client.close()
     }
 
+    @Test func rejectedConcurrentRunKeepsStopWorking() async throws {
+        let cluster = FakeCluster { sql in sql.contains("long") ? .hang : .packets(FakeCluster.rows("ok")) }
+        let client = try await connect(cluster)
+        let session = client.openSession()
+        let long = Task { try await session.run("SELECT 'long'") }
+        try await Task.sleep(for: .milliseconds(100))
+        await #expect { _ = try await session.run("SELECT 2") } throws: { ($0 as? StarRocksError)?.kind == .busy }
+        #expect(await session.runningConnectionID != nil, "the rejected run must not clear the running statement")
+        await session.cancel(graceSeconds: 1)
+        await #expect { _ = try await long.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
+        await session.close()
+        await client.close()
+    }
+
     @Test func classifiesSessionStatements() {
         #expect(SessionContextChange.parse("SET query_timeout = 10") == .sessionVariable("SET query_timeout = 10"))
         #expect(SessionContextChange.parse("set role all") == .sessionVariable("set role all"))

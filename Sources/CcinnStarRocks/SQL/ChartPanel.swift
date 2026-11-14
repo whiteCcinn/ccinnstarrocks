@@ -127,6 +127,8 @@ struct ChartCanvas: View {
             if let hovered, kind != .pie { HoverCard(x: hovered, points: data.points.filter { $0.x == hovered }) }
         }
         .animation(.easeInOut(duration: 0.25), value: data.points.count)
+        // DATE/DATETIME values carry no zone and are parsed as UTC; label the axis in UTC too.
+        .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .current)
     }
 
     @ChartContentBuilder

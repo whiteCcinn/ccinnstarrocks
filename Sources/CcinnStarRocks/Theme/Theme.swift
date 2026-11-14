@@ -160,7 +160,8 @@ enum Format {
         if milliseconds < 1 { return "<1 ms" }
         if milliseconds < 1000 { return "\(Int(milliseconds.rounded())) ms" }
         if milliseconds < 60_000 { return String(format: "%.2f s", milliseconds / 1000) }
-        let seconds = Int(milliseconds / 1000)
+        let seconds = int64(milliseconds / 1000)
+        if seconds >= 86_400 { return "\(seconds / 86_400)d \(seconds % 86_400 / 3600)h" }
         return "\(seconds / 60)m \(seconds % 60)s"
     }
 

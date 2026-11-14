@@ -269,7 +269,9 @@ final class SQLTabModel {
     /// Changes the session database (`USE`).
     func use(database name: String) {
         guard !isRunning else { return }
+        isRunning = true
         Task {
+            defer { isRunning = false }
             do {
                 // Databases in the menu belong to the sidebar's catalog.
                 _ = try await session.run("USE \(SQLText.qualified(workspace.selectedCatalog, name))")

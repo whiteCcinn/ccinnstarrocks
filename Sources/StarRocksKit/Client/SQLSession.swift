@@ -13,6 +13,7 @@ public actor SQLSession {
     /// Increases with every statement, so a late cancel never touches a newer run on the same connection.
     private var runGeneration: UInt64 = 0
     private var cancelledGeneration: UInt64?
+    private var isBusy = false
     /// Session-level `SET` statements replayed after a reconnect (bounded).
     private var sessionSettings: [String] = []
     private static let maxSessionSettings = 64
@@ -25,6 +26,10 @@ public actor SQLSession {
 
     /// Runs one statement (or a server-side multi-statement batch) and returns all of its results.
     public func run(_ sql: String, limits: RowLimits = RowLimits()) async throws -> [ResultSet] {
+        // One statement at a time; a rejected second run must not touch the running one's state.
+        guard !isBusy else { throw StarRocksError(.busy, "This editor is already running a statement") }
+        isBusy = true
+        defer { isBusy = false }
         let connection = try await ensureConnection()
         runGeneration &+= 1
         let generation = runGeneration

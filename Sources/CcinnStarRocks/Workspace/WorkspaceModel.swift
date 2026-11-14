@@ -77,8 +77,11 @@ final class WorkspaceModel {
 
     /// Columns per table for completion and previews.
     private var columnCache: [TableKey: [ColumnInfo]] = [:]
+    private var columnMisses: [TableKey: Date] = [:]
     private var columnLoads: [String: Task<Void, Never>] = [:]
     private var objectLoads: [String: Task<Void, Never>] = [:]
+    private var objectLoadGenerations: [String: UInt64] = [:]
+    private var objectLoadGeneration: UInt64 = 0
     private var sqlTabCounter = 0
     private var toastTask: Task<Void, Never>?
 
@@ -128,8 +131,10 @@ final class WorkspaceModel {
     func reloadDatabases() async {
         isLoadingDatabases = true
         defer { isLoadingDatabases = false }
+        let catalog = selectedCatalog
         do {
-            let names = try await client.databases(catalog: selectedCatalog)
+            let names = try await client.databases(catalog: catalog)
+            guard catalog == selectedCatalog else { return } // the user switched catalogs meanwhile
             databases = names
             databasesError = nil
             if expandedDatabases.isEmpty {
@@ -141,12 +146,14 @@ final class WorkspaceModel {
                 loadObjects(database: database, force: true)
             }
         } catch {
+            guard catalog == selectedCatalog else { return }
             databasesError = describe(error)
         }
     }
 
     func refreshAll() {
         columnCache.removeAll()
+        columnMisses.removeAll()
         Task {
             await loadCatalogs()
             await reloadDatabases()
@@ -167,23 +174,31 @@ final class WorkspaceModel {
         if objectLoads[database] != nil, !force { return }
         if databaseStates[database] == nil { databaseStates[database] = .loading }
         let catalog = selectedCatalog
+        objectLoadGeneration &+= 1
+        let generation = objectLoadGeneration
+        objectLoads[database]?.cancel()
         objectLoads[database] = Task {
-            defer { objectLoads[database] = nil }
+            // Only the newest load for this database may publish its result or clear the slot.
+            defer { if objectLoadGenerations[database] == generation { objectLoads[database] = nil } }
             do {
                 let objects = try await client.objects(catalog: catalog, database: database)
-                guard catalog == selectedCatalog else { return }
+                guard catalog == selectedCatalog, objectLoadGenerations[database] == generation else { return }
                 databaseStates[database] = .loaded(objects)
             } catch {
-                guard catalog == selectedCatalog else { return }
+                guard catalog == selectedCatalog, objectLoadGenerations[database] == generation, !Task.isCancelled else { return }
                 databaseStates[database] = .failed(describe(error))
             }
         }
+        objectLoadGenerations[database] = generation
     }
 
     func awaitObjects(database: String) async -> [DatabaseObject]? {
         if case let .loaded(objects)? = databaseStates[database] { return objects }
         loadObjects(database: database)
-        await objectLoads[database]?.value
+        while let task = objectLoads[database] {
+            await task.value
+            if objectLoads[database] == task { break }
+        }
         if case let .loaded(objects)? = databaseStates[database] { return objects }
         return nil
     }
@@ -214,7 +229,8 @@ final class WorkspaceModel {
                               databases: databases, objectsByDatabase: objectsByDatabase, columnsByTable: columnCache)
     }
 
-    /// Loads what completion reported as missing: object lists and (whole-database) column lists.
+    /// Loads what completion reported as missing: object lists, and columns of the referenced tables.
+    /// Tables that do not exist are remembered for a minute so typing does not re-query them.
     func ensureSchema(columns keys: [TableKey], databases missingDatabases: [String], catalog: String) async {
         // Object lists come from the sidebar's catalog; column lists from the internal information_schema.
         guard catalog == selectedCatalog else { return }
@@ -222,20 +238,31 @@ final class WorkspaceModel {
             _ = await awaitObjects(database: database)
         }
         guard catalog == SQLText.defaultCatalog else { return }
-        for database in Set(keys.map(\.database)) {
-            if let running = columnLoads[database] {
+        let now = Date()
+        let wanted = Set(keys).filter { key in
+            columnCache[key] == nil && (columnMisses[key].map { now.timeIntervalSince($0) > 60 } ?? true)
+        }
+        for (database, group) in Dictionary(grouping: wanted, by: \.database) {
+            let tables = group.map(\.table)
+            let loadKey = database + "\u{1F}" + tables.sorted().joined(separator: ",")
+            if let running = columnLoads[loadKey] {
                 await running.value
                 continue
             }
             let client = client
             let task = Task {
-                if let columns = try? await client.columnsByTable(database: database) {
-                    for (table, list) in columns { columnCache[TableKey(database: database, table: table)] = list }
+                guard let columns = try? await client.columnsByTable(database: database, tables: tables) else { return }
+                var found = Set<TableKey>()
+                for (table, list) in columns {
+                    let key = TableKey(database: database, table: table)
+                    columnCache[key] = list
+                    found.insert(key)
                 }
+                for key in group where !found.contains(key) { columnMisses[key] = Date() }
             }
-            columnLoads[database] = task
+            columnLoads[loadKey] = task
             await task.value
-            columnLoads[database] = nil
+            columnLoads[loadKey] = nil
         }
     }
 
@@ -308,7 +335,7 @@ final class WorkspaceModel {
     private func closeResources(of tab: WorkspaceTab) {
         switch tab.kind {
         case let .sql(model): model.close()
-        case let .operations(model): model.stopAutoRefresh()
+        case let .operations(model): model.close()
         case .object: break
         }
     }

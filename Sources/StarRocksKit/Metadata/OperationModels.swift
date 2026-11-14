@@ -16,7 +16,8 @@ public struct SessionProcess: Sendable, Hashable, Identifiable {
     public var frontend: String?
     public var isPending: Bool?
 
-    public var id: UInt32 { connectionID }
+    /// Connection ids are only unique per frontend.
+    public var id: String { "\(frontend ?? ""):\(connectionID)" }
 
     public init?(record: Record) {
         guard let id = record.int("Id").flatMap({ UInt32(exactly: $0) }) else { return nil }

@@ -108,13 +108,15 @@ public final class StarRocksClient: Sendable {
     // MARK: Kill
 
     /// `KILL QUERY <id>`: stops the statement running on that connection; the connection survives.
-    public func killQuery(connectionID: UInt32) async throws {
-        try await runOnDedicatedConnection("KILL QUERY \(connectionID)")
+    /// Connection ids are per frontend: pass `frontend` (the processlist `ServerName`) to make sure the
+    /// kill runs on that FE even when the profile points at a load balancer.
+    public func killQuery(connectionID: UInt32, frontend: String? = nil) async throws {
+        try await runOnDedicatedConnection("KILL QUERY \(connectionID)", frontend: frontend)
     }
 
     /// `KILL <id>`: terminates the whole connection.
-    public func killConnection(_ connectionID: UInt32) async throws {
-        try await runOnDedicatedConnection("KILL \(connectionID)")
+    public func killConnection(_ connectionID: UInt32, frontend: String? = nil) async throws {
+        try await runOnDedicatedConnection("KILL \(connectionID)", frontend: frontend)
     }
 
     func killQueryInBackground(connectionID: UInt32) {
@@ -122,21 +124,41 @@ public final class StarRocksClient: Sendable {
     }
 
     /// Kill statements must not wait behind a saturated pool, so they use a short-lived connection.
-    private func runOnDedicatedConnection(_ sql: String) async throws {
+    private func runOnDedicatedConnection(_ sql: String, frontend: String?) async throws {
         var configuration = effectiveConfiguration
         configuration.database = nil
         configuration.catalog = nil
         let transportFactory = transportFactory
-        try await Deadline.run(seconds: 10, timeoutError: { StarRocksError(.timeout, "The server did not answer \(sql) in time") }) { [configuration] in
-            let connection = try await MySQLConnection.connect(configuration, transportFactory: transportFactory)
-            do {
-                _ = try await connection.execute(sql)
-                await connection.close()
-            } catch {
-                await connection.close()
-                throw error
+        try await Deadline.run(seconds: 20, timeoutError: { StarRocksError(.timeout, "The server did not answer \(sql) in time") }) { [configuration] in
+            // Behind a load balancer each new connection may land on another FE; retry a few times.
+            for _ in 0..<(frontend == nil ? 1 : 8) {
+                let connection = try await MySQLConnection.connect(configuration, transportFactory: transportFactory)
+                do {
+                    if let frontend {
+                        let current = try await Self.frontendName(of: connection)
+                        guard current == nil || current == frontend else {
+                            await connection.close()
+                            continue
+                        }
+                    }
+                    _ = try await connection.execute(sql)
+                    await connection.close()
+                    return
+                } catch {
+                    await connection.close()
+                    throw error
+                }
             }
+            throw StarRocksError(.server, "Could not reach frontend \(frontend ?? "") through \(configuration.endpoint) (it looks like a load balancer). Connect to that FE directly to stop this session.")
         }
+    }
+
+    /// The FE a connection is on (its own processlist row's `ServerName`); `nil` when the version
+    /// does not report it (single-FE assumption).
+    static func frontendName(of connection: MySQLConnection) async throws -> String? {
+        let rows = try await connection.execute("SHOW FULL PROCESSLIST").records
+        guard rows.first?.has("ServerName") == true else { return nil }
+        return rows.first { $0.int("Id").flatMap { UInt32(exactly: $0) } == connection.connectionID }?.text("ServerName")
     }
 
     /// Connects with exactly the session's context (no fallback to the profile's database, which may

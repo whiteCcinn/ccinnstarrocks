@@ -28,8 +28,8 @@ public struct SSHTunnelConfiguration: Sendable, Codable, Equatable, Hashable {
 /// Local port forward through the system OpenSSH client (`/usr/bin/ssh -N -L`).
 ///
 /// Using the system client means `~/.ssh/config`, known_hosts, ssh-agent and hardware keys all work
-/// exactly as in Terminal. Passwords/passphrases are answered through `SSH_ASKPASS` by a one-shot
-/// helper script that reads the secret from the ssh child's environment; nothing is written to disk.
+/// exactly as in Terminal. Passwords/passphrases are answered through `SSH_ASKPASS` by a helper
+/// script that reads a 0600 temporary file, deleted as soon as the tunnel is established.
 public final class SSHTunnel: Sendable {
     public let localPort: Int
     public let remote: Endpoint
@@ -92,6 +92,10 @@ public final class SSHTunnel: Sendable {
         let localPort = try freeLocalPort()
         let arguments = try arguments(for: configuration, localPort: localPort, remote: remote, connectTimeout: Int(timeout))
         let askPass = try AskPassHelper.shared.path()
+        // The secret is handed to askpass through a 0600 file that is deleted as soon as the tunnel is
+        // up (or failed), instead of living in the environment of the long-running ssh processes.
+        let secretFile = try AskPassHelper.shared.writeSecret(configuration.authentication == .agent ? nil : secret)
+        defer { AskPassHelper.shared.removeSecret(secretFile) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -100,7 +104,7 @@ public final class SSHTunnel: Sendable {
         environment["SSH_ASKPASS"] = askPass
         environment["SSH_ASKPASS_REQUIRE"] = "force"
         environment["DISPLAY"] = environment["DISPLAY"] ?? ":0"
-        environment["CCINNSR_ASKPASS_SECRET"] = secret ?? ""
+        environment["CCINNSR_ASKPASS_FILE"] = secretFile.path
         environment["CCINNSR_PARENT_PID"] = String(getpid())
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
@@ -170,14 +174,18 @@ public final class SSHTunnel: Sendable {
         ]
         switch configuration.authentication {
         case .agent:
-            break
+            // Never answer password prompts with a stored secret in agent mode.
+            arguments += ["-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no"]
         case .password:
             arguments += ["-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PubkeyAuthentication=no"]
         case .privateKey:
             guard let path = configuration.privateKeyPath, !path.isEmpty else {
                 throw StarRocksError(.sshTunnel, "Choose a private key file for the SSH tunnel")
             }
-            arguments += ["-i", (path as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
+            // Only public-key auth: a rejected key must not fall back to sending the passphrase as a password.
+            arguments += ["-i", (path as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes",
+                          "-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
+                          "-o", "KbdInteractiveAuthentication=no"]
         }
         arguments.append(user.isEmpty ? host : "\(user)@\(host)")
         return arguments
@@ -248,20 +256,40 @@ final class StderrCollector: Sendable {
     var text: String { String(decoding: buffer.withLock { $0 }, as: UTF8.self) }
 }
 
-/// Writes (once per process) a tiny askpass script that prints the secret passed via the environment.
+/// Writes (once per process) a tiny askpass script that prints the secret file named in the
+/// environment, and manages the short-lived 0600 secret files.
 final class AskPassHelper: Sendable {
     static let shared = AskPassHelper()
-    private let cached = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let cached = OSAllocatedUnfairLock<URL?>(initialState: nil)
 
-    func path() throws -> String {
-        if let existing = cached.withLock({ $0 }), FileManager.default.isExecutableFile(atPath: existing) { return existing }
+    private func directory() throws -> URL {
+        if let existing = cached.withLock({ $0 }), FileManager.default.fileExists(atPath: existing.path) { return existing }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnstarrocks-askpass-\(getpid())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let script = directory.appendingPathComponent("askpass.sh")
-        let contents = "#!/bin/sh\nprintf '%s\\n' \"$CCINNSR_ASKPASS_SECRET\"\n"
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        cached.withLock { $0 = directory }
+        return directory
+    }
+
+    func path() throws -> String {
+        let script = try directory().appendingPathComponent("askpass.sh")
+        if FileManager.default.isExecutableFile(atPath: script.path) { return script.path }
+        let contents = "#!/bin/sh\n[ -r \"$CCINNSR_ASKPASS_FILE\" ] && cat \"$CCINNSR_ASKPASS_FILE\"\necho\n"
         try Data(contents.utf8).write(to: script, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-        cached.withLock { $0 = script.path }
         return script.path
+    }
+
+    /// Creates a 0600 file holding `secret` (empty when nil).
+    func writeSecret(_ secret: String?) throws -> URL {
+        let file = try directory().appendingPathComponent("secret-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: file.path, contents: Data((secret ?? "").utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw StarRocksError(.sshTunnel, "Could not prepare the SSH credentials")
+        }
+        return file
+    }
+
+    func removeSecret(_ file: URL) {
+        try? FileManager.default.removeItem(at: file)
     }
 }

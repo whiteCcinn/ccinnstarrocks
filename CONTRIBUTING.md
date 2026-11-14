@@ -33,7 +33,7 @@ dist/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks \
   --object shop.orders --section partitions
 ```
 
-Other launch arguments: `--sql "…" --auto-run [--view chart]`, `--operations running|sessions|loads|cluster`, `--profile <saved name>` and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the window without screen-recording permission).
+For a password, set `CCINNSTARROCKS_PASSWORD` in the environment (passwords never go on the command line). Other launch arguments: `--sql "…" --auto-run [--view chart]`, `--operations running|sessions|loads|cluster`, `--profile <saved name>` and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the window without screen-recording permission).
 
 ## Project layout
 

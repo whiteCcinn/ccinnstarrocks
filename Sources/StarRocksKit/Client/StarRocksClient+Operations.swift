@@ -16,7 +16,7 @@ extension StarRocksClient {
         sql += " ORDER BY CREATE_TIME DESC LIMIT \(max(1, min(limit, 10_000)))"
         do {
             return try await execute(sql).records.map { LoadJob(record: $0) }
-        } catch {
+        } catch let error as StarRocksError where error.kind == .server {
             guard let database else { throw error }
             let jobs = try await execute("SHOW LOAD FROM \(SQLText.quoteIdentifier(database))").records.map { LoadJob(record: $0, database: database) }
             return (activeOnly ? jobs.filter(\.isActive) : jobs).reversed().prefix(limit).map { $0 }
@@ -34,7 +34,7 @@ extension StarRocksClient {
         if let database { sql += " WHERE DB_NAME = \(SQLText.literal(database))" }
         do {
             return try await execute(sql).records.map(RoutineLoadJob.init(record:))
-        } catch {
+        } catch let error as StarRocksError where error.kind == .server {
             guard let database else { throw error }
             return try await execute("SHOW ALL ROUTINE LOAD FROM \(SQLText.quoteIdentifier(database))").records.map(RoutineLoadJob.init(record:))
         }
@@ -49,10 +49,12 @@ extension StarRocksClient {
         var jobs: [AlterJob] = []
         var firstError: (any Error)?
         for kind in kinds {
+            try Task.checkCancellation()
             do {
                 let result = try await execute("SHOW ALTER TABLE \(kind.rawValue) FROM \(target)")
                 jobs += result.records.map { AlterJob(kind: kind, database: database, record: $0) }
-            } catch {
+            } catch let error as StarRocksError where error.kind == .server {
+                // e.g. OPTIMIZE jobs are unknown on older versions
                 firstError = firstError ?? error
             }
         }
@@ -65,10 +67,10 @@ extension StarRocksClient {
     }
 
     public func nodes() async throws -> [ClusterNode] {
-        async let frontends = try? execute("SHOW FRONTENDS")
-        async let backends = try? execute("SHOW BACKENDS")
-        async let computeNodes = try? execute("SHOW COMPUTE NODES")
-        let (fe, be, cn) = await (frontends, backends, computeNodes)
+        async let frontends = tolerant("SHOW FRONTENDS")
+        async let backends = tolerant("SHOW BACKENDS")
+        async let computeNodes = tolerant("SHOW COMPUTE NODES")
+        let (fe, be, cn) = try await (frontends, backends, computeNodes)
         guard fe != nil || be != nil || cn != nil else {
             throw StarRocksError(.server, "Listing cluster nodes requires the cluster_admin or root role")
         }
@@ -90,7 +92,12 @@ extension StarRocksClient {
         async let alters = Self.capture {
             var jobs: [AlterJob] = []
             for database in databases.prefix(64) {
-                jobs += (try? await self.alterJobs(database: database).filter(\.isActive)) ?? []
+                try Task.checkCancellation()
+                do {
+                    jobs += try await self.alterJobs(database: database).filter(\.isActive)
+                } catch let error as StarRocksError where error.kind == .server {
+                    continue // no privilege on this database
+                }
             }
             return jobs
         }
@@ -125,6 +132,8 @@ extension StarRocksClient {
             return .success(try await body())
         } catch let error as StarRocksError {
             return .failure(error)
+        } catch is CancellationError {
+            return .failure(StarRocksError.cancelled())
         } catch {
             return .failure(StarRocksError(.network, error.localizedDescription))
         }

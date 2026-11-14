@@ -83,7 +83,7 @@ final class ConnectionDraft {
         testTask?.cancel()
         let profile = makeProfile()
         let password = password
-        let sshSecret = sshEnabled ? sshSecret : nil
+        let sshSecret = sshEnabled && ssh.authentication != .agent ? sshSecret : nil
         testState = .running("Connecting to \(profile.endpoint)…")
         let report: @Sendable (String) -> Void = { status in
             Task { @MainActor in

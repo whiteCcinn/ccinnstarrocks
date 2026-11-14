@@ -2,8 +2,19 @@ import Foundation
 
 /// Catalog browsing (design D3: `information_schema` first, `SHOW` fallbacks).
 extension StarRocksClient {
+    /// Runs an optional metadata statement: `nil` when the server rejects it (unknown view on older
+    /// versions, missing privilege); timeouts, network errors and cancellation still propagate so that
+    /// a slow cluster never yields silently incomplete metadata.
+    func tolerant(_ sql: String) async throws -> ResultSet? {
+        do {
+            return try await execute(sql)
+        } catch let error as StarRocksError where error.kind == .server || error.kind == .authentication {
+            return nil
+        }
+    }
+
     public func catalogs() async throws -> [CatalogInfo] {
-        guard let result = try? await execute("SHOW CATALOGS") else {
+        guard let result = try await tolerant("SHOW CATALOGS") else {
             return [CatalogInfo(name: SQLText.defaultCatalog, type: "Internal")]
         }
         let catalogs = result.records.compactMap { record -> CatalogInfo? in
@@ -33,26 +44,26 @@ extension StarRocksClient {
             return try await externalObjects(catalog: catalog, database: database)
         }
         let schema = SQLText.literal(database)
-        async let tablesResult = try? execute("""
+        async let tablesResult = tolerant("""
             SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS, DATA_LENGTH, CREATE_TIME, UPDATE_TIME, TABLE_COMMENT \
             FROM information_schema.tables WHERE TABLE_SCHEMA = \(schema)
             """)
-        async let configsResult = try? execute("SELECT * FROM information_schema.tables_config WHERE TABLE_SCHEMA = \(schema)")
-        async let viewsResult = try? execute("SELECT * FROM information_schema.materialized_views WHERE TABLE_SCHEMA = \(schema)")
-        async let rollupsResult = try? execute("SHOW ALTER MATERIALIZED VIEW FROM \(SQLText.quoteIdentifier(database))")
+        async let configsResult = tolerant("SELECT * FROM information_schema.tables_config WHERE TABLE_SCHEMA = \(schema)")
+        async let viewsResult = tolerant("SELECT * FROM information_schema.materialized_views WHERE TABLE_SCHEMA = \(schema)")
+        async let rollupsResult = tolerant("SHOW ALTER MATERIALIZED VIEW FROM \(SQLText.quoteIdentifier(database))")
 
-        var tables = await tablesResult?.records.compactMap(ObjectClassifier.TableRow.init(record:))
+        var tables = try await tablesResult?.records.compactMap(ObjectClassifier.TableRow.init(record:))
         if tables == nil {
             tables = try await showFullTables(catalog: catalog, database: database)
         }
-        var materializedViews = await viewsResult?.records
+        var materializedViews = try await viewsResult?.records
         if materializedViews == nil {
-            materializedViews = (try? await execute("SHOW MATERIALIZED VIEWS FROM \(SQLText.quoteIdentifier(database))"))?.records
+            materializedViews = try await tolerant("SHOW MATERIALIZED VIEWS FROM \(SQLText.quoteIdentifier(database))")?.records
         }
         return ObjectClassifier.classify(catalog: catalog, database: database, tables: tables ?? [],
-                                         configs: await configsResult?.records ?? [],
+                                         configs: try await configsResult?.records ?? [],
                                          materializedViews: materializedViews ?? [],
-                                         rollupJobs: await rollupsResult?.records ?? [])
+                                         rollupJobs: try await rollupsResult?.records ?? [])
     }
 
     private func externalObjects(catalog: String, database: String) async throws -> [DatabaseObject] {
@@ -83,20 +94,23 @@ extension StarRocksClient {
             return Self.indexColumns(result, index: object.name)
         }
         if object.catalog == SQLText.defaultCatalog {
-            let byTable = try await columnsByTable(database: object.database, table: object.name)
+            let byTable = try await columnsByTable(database: object.database, tables: [object.name])
             if let columns = byTable[object.name], !columns.isEmpty { return columns }
         }
         let result = try await execute("DESC \(object.qualifiedName)")
         return Self.describeColumns(result)
     }
 
-    /// All columns of a database (or one table) keyed by table name; feeds completion and the grid.
-    public func columnsByTable(database: String, table: String? = nil) async throws -> [String: [ColumnInfo]] {
+    /// Columns keyed by table name, for the given tables (at most 100) or a whole database.
+    public func columnsByTable(database: String, tables: [String]? = nil) async throws -> [String: [ColumnInfo]] {
         var sql = """
             SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, COLUMN_TYPE, \
             COLUMN_KEY, EXTRA, COLUMN_COMMENT FROM information_schema.columns WHERE TABLE_SCHEMA = \(SQLText.literal(database))
             """
-        if let table { sql += " AND TABLE_NAME = \(SQLText.literal(table))" }
+        if let tables {
+            guard !tables.isEmpty else { return [:] }
+            sql += " AND TABLE_NAME IN (\(tables.prefix(100).map(SQLText.literal).joined(separator: ", ")))"
+        }
         let result = try await execute(sql)
         var columns: [String: [ColumnInfo]] = [:]
         for record in result.records {

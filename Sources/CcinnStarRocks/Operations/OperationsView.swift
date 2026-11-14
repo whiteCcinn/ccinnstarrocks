@@ -15,7 +15,7 @@ struct OperationsView: View {
                 case .sessions: SessionsView(model: model)
                 case .loads: LoadsView(model: model)
                 case .routineLoads: RoutineLoadsView(model: model)
-                case .taskRuns: LoadableView(state: model.taskRuns, retry: model.refresh) { TaskRunTable(runs: $0, showsTaskName: true).padding(12) }
+                case .taskRuns: LoadableView(state: model.taskRuns, retry: { model.refresh() }) { TaskRunTable(runs: $0, showsTaskName: true).padding(12) }
                 case .schemaChanges: SchemaChangesView(model: model)
                 case .cluster: ClusterView(model: model)
                 }
@@ -91,7 +91,7 @@ private struct RunningNowView: View {
     let model: OperationsModel
 
     var body: some View {
-        LoadableView(state: model.activity, retry: model.refresh) { snapshot in
+        LoadableView(state: model.activity, retry: { model.refresh() }) { snapshot in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 12) {
@@ -203,7 +203,7 @@ private struct SessionsView: View {
     @State private var selection: SessionProcess.ID?
 
     var body: some View {
-        LoadableView(state: model.sessions, retry: model.refresh) { processes in
+        LoadableView(state: model.sessions, retry: { model.refresh() }) { processes in
             let shown = activeOnly ? processes.filter(\.isRunningStatement) : processes
             VStack(spacing: 0) {
                 HStack {
@@ -247,7 +247,7 @@ private struct LoadsView: View {
     @State private var selection: LoadJob.ID?
 
     var body: some View {
-        LoadableView(state: model.loads, retry: model.refresh) { jobs in
+        LoadableView(state: model.loads, retry: { model.refresh() }) { jobs in
             VSplitView {
                 Table(jobs, selection: $selection) {
                     TableColumn("State") { StateBadge(state: $0.state) }.width(90)
@@ -310,7 +310,7 @@ private struct RoutineLoadsView: View {
     @State private var selection: RoutineLoadJob.ID?
 
     var body: some View {
-        LoadableView(state: model.routineLoads, retry: model.refresh) { jobs in
+        LoadableView(state: model.routineLoads, retry: { model.refresh() }) { jobs in
             if jobs.isEmpty {
                 ContentUnavailableView("No Routine Loads", systemImage: "arrow.triangle.2.circlepath.circle",
                                        description: Text("Kafka and Pulsar routine load jobs appear here."))
@@ -350,7 +350,7 @@ private struct SchemaChangesView: View {
     let model: OperationsModel
 
     var body: some View {
-        LoadableView(state: model.alterJobs, retry: model.refresh) { jobs in
+        LoadableView(state: model.alterJobs, retry: { model.refresh() }) { jobs in
             if jobs.isEmpty {
                 ContentUnavailableView("No Schema Changes", systemImage: "hammer",
                                        description: Text("ALTER TABLE jobs, rollups and sync materialized view builds appear here."))

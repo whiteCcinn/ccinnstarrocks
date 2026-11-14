@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MySQLWire
 @testable import CcinnStarRocksKit
 import StarRocksKit
 
@@ -244,5 +245,56 @@ struct ErrorLocatorBoundsTests {
         let statement = "USE\n`x`"
         #expect(SQLErrorLocator.offset(in: statement, message: "at line 2, column 9223372036854775807") == statement.utf16.count)
         #expect(SQLErrorLocator.offset(in: statement, message: "at line 99999999999999999999, column 1") == nil)
+    }
+}
+
+@Suite("Review regressions")
+struct ReviewRegressionTests {
+    @Test func withDeleteIsAMutationAndNeverAutoLimited() {
+        let sql = "WITH x AS (SELECT id FROM t WHERE flag) DELETE FROM t WHERE id IN (SELECT id FROM x)"
+        #expect(SQLStatementKind.of(sql) == .dataModification)
+        #expect(SQLStatementKind.of(sql).isMutation)
+        #expect(AutoLimit.apply(to: sql, limit: 1000).applied == false)
+        #expect(SQLStatementKind.of("WITH a AS (SELECT 1) SELECT * FROM a") == .query)
+        #expect(AutoLimit.apply(to: "WITH a AS (SELECT 1) SELECT * FROM a", limit: 10).applied)
+    }
+
+    @Test(arguments: ["LOAD LABEL shop.l1 (DATA INFILE('s3://b/x') INTO TABLE t)", "RESTORE SNAPSHOT shop.s FROM repo", "BACKUP SNAPSHOT shop.s TO repo",
+                      "EXPORT TABLE t TO 's3://b/'", "SET GLOBAL query_timeout = 1", "FROBNICATE everything", "ADMIN SET FRONTEND CONFIG ('a'='b')"])
+    func confirmableStatements(sql: String) {
+        #expect(SQLStatementKind.of(sql).isMutation, "\(sql)")
+    }
+
+    @Test func readsAreNotMutations() {
+        for sql in ["SELECT 1", "SHOW TABLES", "ADMIN SHOW FRONTEND CONFIG", "SET query_timeout = 5", "USE shop", "EXPLAIN SELECT 1"] {
+            #expect(!SQLStatementKind.of(sql).isMutation, "\(sql)")
+        }
+    }
+
+    @Test func redactsCredentials() {
+        #expect(SQLRedactor.redact("CREATE USER 'a'@'%' IDENTIFIED BY 'p@ss'") == "CREATE USER 'a'@'%' IDENTIFIED BY '***'")
+        #expect(SQLRedactor.redact("ALTER USER a IDENTIFIED WITH mysql_native_password BY \"x\"") == "ALTER USER a IDENTIFIED WITH mysql_native_password BY \"***\"")
+        #expect(SQLRedactor.redact("SET PASSWORD = PASSWORD('x')") == "SET PASSWORD = PASSWORD('***')")
+        let catalog = #"CREATE EXTERNAL CATALOG h PROPERTIES ("type"="hive", "aws.s3.access_key"="AKIA", "aws.s3.secret_key" = "s3cr3t", "aws.s3.region"="us-east-1")"#
+        let redacted = SQLRedactor.redact(catalog)
+        #expect(!redacted.contains("AKIA") && !redacted.contains("s3cr3t"))
+        #expect(redacted.contains("\"hive\"") && redacted.contains("us-east-1"))
+        #expect(SQLRedactor.redact("SELECT 'password' FROM t") == "SELECT 'password' FROM t")
+    }
+}
+
+@Suite("Chart robustness")
+struct ChartRobustnessTests {
+    @Test func extremeRangesDoNotTrap() {
+        let columns = [ColumnDefinition(name: "x", type: .double), ColumnDefinition(name: "y", type: .double)]
+        var rows: [[String?]] = (0..<3_000).map { [String(Double($0)), "1"] }
+        rows.append(["1.6e308", "1"])
+        rows.append(["-1.6e308", "1"])
+        let huge = ChartDataBuilder.build(columns: columns, rows: rows, spec: ChartSpec(kind: .line, xColumn: 0, yColumns: [1]), roles: [.numeric, .numeric])
+        #expect(huge.points.count <= 2_100)
+        let tiny: [[String?]] = (0..<3_000).map { [$0 % 2 == 0 ? "0" : "5e-324", "1"] }
+        let denormal = ChartDataBuilder.build(columns: columns, rows: tiny, spec: ChartSpec(kind: .line, xColumn: 0, yColumns: [1], aggregation: .none),
+                                              roles: [.numeric, .numeric])
+        #expect(!denormal.points.isEmpty)
     }
 }

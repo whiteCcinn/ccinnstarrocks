@@ -7,7 +7,7 @@ struct ClusterView: View {
     let model: OperationsModel
 
     var body: some View {
-        LoadableView(state: model.nodes, retry: model.refresh) { nodes in
+        LoadableView(state: model.nodes, retry: { model.refresh() }) { nodes in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     let alive = nodes.filter(\.isAlive).count

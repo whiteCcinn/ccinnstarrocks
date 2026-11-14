@@ -35,7 +35,7 @@ final class WindowSession {
         connectError = nil
         let name = profile.displayName
         let password = overridePassword ?? store.password(for: profile) ?? ""
-        let sshSecret = profile.ssh != nil ? store.sshSecret(for: profile) : nil
+        let sshSecret = profile.ssh.map { $0.authentication == .agent } == false ? store.sshSecret(for: profile) : nil
         phase = .connecting(name: name, status: "Connecting…")
         let report: @Sendable (String) -> Void = { status in
             Task { @MainActor in self.updateStatus(name: name, status: status) }
@@ -72,6 +72,9 @@ final class WindowSession {
     }
 
     func disconnect() {
+        // A connect still in flight would otherwise finish later and leave a live client/tunnel behind.
+        connectTask?.cancel()
+        connectTask = nil
         workspace?.shutdown()
         phase = .connections
     }

@@ -133,7 +133,7 @@ struct ConnectingView: View {
 }
 
 /// Developer conveniences and automated visual checks:
-/// `CcinnStarRocks --connect host:port [--user u] [--password p] [--database db] [--object db.name]
+/// `CcinnStarRocks --connect host:port [--user u] [--database db] [--object db.name]
 ///  [--section overview|partitions|tablets|refreshes|columns|ddl|data] [--sql "…"] [--auto-run]
 ///  [--view grid|chart|plan] [--operations running|sessions|loads|cluster|…] [--profile name]`
 @MainActor
@@ -158,7 +158,8 @@ enum LaunchArguments {
             let port = parts.count > 1 ? Int(parts[1]) ?? 9030 : 9030
             profile = ConnectionProfile(name: "\(host):\(port)", host: host, port: port, username: value("--user") ?? "root",
                                         defaultDatabase: value("--database"), color: .indigo)
-            password = value("--password") ?? ""
+            // Passwords never go on the command line (visible to other processes); use the environment.
+            password = ProcessInfo.processInfo.environment["CCINNSTARROCKS_PASSWORD"] ?? ""
         } else {
             return
         }

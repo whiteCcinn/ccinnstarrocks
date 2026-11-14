@@ -75,10 +75,17 @@ final class OperationsModel {
 
     // MARK: Refresh
 
-    func refresh() {
+    private var isRefreshing = false
+
+    /// `fromTimer` refreshes are skipped while one is still running, so slow clusters are never
+    /// interrupted half-way (which would leave the view loading forever).
+    func refresh(fromTimer: Bool = false) {
+        if fromTimer, isRefreshing { return }
         refreshTask?.cancel()
         let section = section
+        isRefreshing = true
         refreshTask = Task {
+            defer { if !Task.isCancelled { isRefreshing = false } }
             switch section {
             case .running:
                 if activity.value == nil { activity = .loading }
@@ -129,7 +136,7 @@ final class OperationsModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled, self.autoRefresh else { return }
-                self.refresh()
+                self.refresh(fromTimer: true)
             }
         }
     }
@@ -139,15 +146,25 @@ final class OperationsModel {
         loopTask = nil
     }
 
+    /// Stops everything when the tab closes.
+    func close() {
+        stopAutoRefresh()
+        refreshTask?.cancel()
+    }
+
     // MARK: Actions
 
     func confirmKill(_ process: SessionProcess, connection: Bool) {
         let id = process.connectionID
         pendingAction = PendingAction(
-            title: connection ? "Kill connection \(id)?" : "Stop the query on connection \(id)?",
+            title: (connection ? "Kill connection \(id)" : "Stop the query on connection \(id)") + (process.frontend.map { " on \($0)?" } ?? "?"),
             message: process.statement.map { String($0.prefix(300)) } ?? "\(process.user ?? "") @ \(process.host ?? "")",
             confirmLabel: connection ? "Kill Connection" : "Kill Query") { [client] in
-                if connection { try await client.killConnection(id) } else { try await client.killQuery(connectionID: id) }
+                if connection {
+                    try await client.killConnection(id, frontend: process.frontend)
+                } else {
+                    try await client.killQuery(connectionID: id, frontend: process.frontend)
+                }
             }
     }
 

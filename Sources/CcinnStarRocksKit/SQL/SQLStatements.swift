@@ -74,25 +74,51 @@ public enum SQLStatementKind: Sendable, Equatable {
 
     public static func of(_ statement: String) -> SQLStatementKind {
         let lexer = SQLLexer(statement)
-        guard let first = lexer.tokens().first(where: { $0.kind != .comment }) else { return .other }
-        let word = lexer.text(of: first).uppercased()
+        let tokens = lexer.tokens().filter { $0.kind != .comment }
+        guard !tokens.isEmpty else { return .other }
+        let words = tokens.map { $0.kind == .keyword || $0.kind == .identifier ? lexer.text(of: $0).uppercased() : lexer.text(of: $0) }
+        var word = words[0]
+        if word == "WITH" { word = mainVerb(afterWith: tokens, words: words) }
         switch word {
-        case "SELECT", "WITH", "VALUES": return .query
-        case "(": return .query
-        case "EXPLAIN", "DESC", "DESCRIBE": return word == "EXPLAIN" ? .explain : .show
-        case "SHOW": return .show
+        case "SELECT", "VALUES", "(": return .query
+        case "EXPLAIN": return .explain
+        case "DESC", "DESCRIBE", "SHOW", "HELP": return .show
+        case "ADMIN": return words.count > 1 && words[1] == "SHOW" ? .show : .administration
         case "USE": return .use
-        case "SET": return .set
-        case "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFRESH": return .dataModification
+        case "SET": return words.count > 1 && (words[1] == "GLOBAL" || words[1] == "PASSWORD" || words[1] == "DEFAULT" || words[1] == "PROPERTY") ? .administration : .set
+        case "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFRESH", "LOAD", "EXPORT", "UPSERT", "MERGE": return .dataModification
         case "CREATE", "ALTER", "DROP", "RENAME", "RECOVER": return .definition
-        case "KILL", "ADMIN", "GRANT", "REVOKE", "PAUSE", "RESUME", "STOP", "CANCEL", "SUBMIT", "ANALYZE", "INSTALL": return .administration
+        case "KILL", "GRANT", "REVOKE", "PAUSE", "RESUME", "STOP", "CANCEL", "SUBMIT", "ANALYZE", "INSTALL", "UNINSTALL",
+             "BACKUP", "RESTORE", "SYNC", "CLEAN", "EXECUTE": return .administration
         default: return .other
         }
     }
 
-    /// Statements that change data or schema (asked to confirm on production connections).
+    /// The statement verb after a `WITH` list: the first SELECT/INSERT/UPDATE/DELETE/VALUES or `(` at depth 0.
+    static func mainVerb(afterWith tokens: [SQLToken], words: [String]) -> String {
+        var depth = 0
+        for (index, token) in tokens.enumerated().dropFirst() {
+            let word = words[index]
+            if token.kind == .punctuation {
+                if word == "(" {
+                    if depth == 0, index > 0, words[index - 1] == ")" { return "(" }
+                    depth += 1
+                }
+                if word == ")" { depth = max(0, depth - 1) }
+                continue
+            }
+            if depth == 0, ["SELECT", "INSERT", "UPDATE", "DELETE", "VALUES"].contains(word) { return word }
+        }
+        return "WITH"
+    }
+
+    /// Statements that may change data, schema or server state (confirmed on production connections).
+    /// Unknown statements are treated as mutations.
     public var isMutation: Bool {
-        self == .dataModification || self == .definition || self == .administration
+        switch self {
+        case .dataModification, .definition, .administration, .other: true
+        case .query, .explain, .show, .use, .set: false
+        }
     }
 }
 
@@ -109,7 +135,7 @@ public enum AutoLimit {
         let tokens = lexer.tokens().filter { $0.kind != .comment }
         guard let first = tokens.first else { return Outcome(sql: sql, applied: false) }
         let firstWord = lexer.text(of: first).uppercased()
-        guard firstWord == "SELECT" || firstWord == "WITH" else { return Outcome(sql: sql, applied: false) }
+        guard firstWord == "SELECT" || firstWord == "WITH", SQLStatementKind.of(sql) == .query else { return Outcome(sql: sql, applied: false) }
 
         var depth = 0
         var lastSignificant: SQLToken?

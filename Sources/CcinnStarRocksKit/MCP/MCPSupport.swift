@@ -152,7 +152,7 @@ public actor MCPAuditLog {
             "duration_ms": .double((durationMilliseconds * 10).rounded() / 10),
         ]
         if let connection { entry["connection"] = .string(connection) }
-        if let statement { entry["statement"] = .string(String(statement.prefix(20_000))) }
+        if let statement { entry["statement"] = .string(String(SQLRedactor.redact(statement).prefix(20_000))) }
         if let rows { entry["rows"] = .int(Int64(rows)) }
         if let error { entry["error"] = .string(String(error.prefix(2_000))) }
         let line = JSONValue.object(entry).serialized() + "\n"

@@ -51,6 +51,7 @@ public actor QueryHistoryStore {
 
     public func append(_ entry: QueryHistoryEntry) {
         var entry = entry
+        entry.sql = SQLRedactor.redact(entry.sql)
         if entry.sql.count > maxStatementLength { entry.sql = String(entry.sql.prefix(maxStatementLength)) }
         var all = loadIfNeeded()
         // Re-running the latest statement replaces it instead of stacking duplicates.
@@ -86,7 +87,9 @@ public actor QueryHistoryStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(all) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
         try? data.write(to: fileURL, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 }

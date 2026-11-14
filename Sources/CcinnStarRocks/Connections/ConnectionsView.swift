@@ -317,7 +317,11 @@ struct ConnectionEditorView: View {
         TextField("SSH host", text: $draft.ssh.host, prompt: Text("bastion.example.com"))
         TextField("SSH port", value: $draft.ssh.port, format: .number.grouping(.never))
         TextField("SSH user", text: $draft.ssh.username)
-        Picker("Authentication", selection: $draft.ssh.authentication) {
+        Picker("Authentication", selection: Binding(get: { draft.ssh.authentication }, set: { mode in
+            // A password is not a key passphrase (and vice versa): never carry it across modes.
+            if mode != draft.ssh.authentication { draft.sshSecret = "" }
+            draft.ssh.authentication = mode
+        })) {
             Text("SSH agent / ~/.ssh/config").tag(SSHTunnelConfiguration.Authentication.agent)
             Text("Password").tag(SSHTunnelConfiguration.Authentication.password)
             Text("Private key").tag(SSHTunnelConfiguration.Authentication.privateKey)
@@ -401,7 +405,9 @@ struct ConnectionEditorView: View {
 
     private func save() -> ConnectionProfile? {
         do {
-            let saved = try store.save(draft.makeProfile(), password: draft.password, sshSecret: draft.sshEnabled ? draft.sshSecret : nil)
+            // The SSH secret belongs to the chosen auth mode; agent mode stores none.
+            let sshSecret = draft.sshEnabled && draft.ssh.authentication != .agent ? draft.sshSecret : nil
+            let saved = try store.save(draft.makeProfile(), password: draft.password, sshSecret: sshSecret)
             saveError = nil
             onSaved(saved)
             return saved
