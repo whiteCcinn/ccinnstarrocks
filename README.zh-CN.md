@@ -74,7 +74,8 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
   - 通过系统 OpenSSH 建立 SSH 隧道（agent、密钥或密码）。
   - 可选启用 `mysql_clear_password` 以支持 LDAP 用户。
   - 可选在执行修改数据或结构的语句前二次确认。
-- **默认安全**：密码保存在 macOS 钥匙串中，不收集、不上传任何数据。
+- **通过 MCP 接入 AI**：内置 Model Context Protocol 服务，让 Claude Code、Codex、Claude Desktop 查询你授权的连接（默认只读），详见 [MCP 服务](#mcp-服务让-ai-查询-starrocks)。
+- **默认安全**：密码保存在 macOS 钥匙串中；除非启用 AI 访问，不会收集或发送任何数据。
 
 ## 兼容性
 
@@ -127,6 +128,54 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
 | **⌘T** | 新建查询 |
 | **⇧⌘R** | 刷新 Catalog |
 | **⇧⌘D** | 断开连接 |
+
+## MCP 服务：让 AI 查询 StarRocks
+
+CcinnStarRocks 内置 **Model Context Protocol** 服务，**Claude Code**、**Codex**、**Claude Desktop**、Cursor 等 AI 助手可以通过你保存的连接探索集群并执行查询。
+
+1. 在 CcinnStarRocks 中打开连接，把 **AI 访问 (MCP)** 设为**只读**或**读写**（默认关闭）。
+2. 注册服务。**设置 → MCP** 中提供了带正确路径、可直接复制的配置：
+
+   ```bash
+   # Claude Code
+   claude mcp add ccinnstarrocks -- /Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks mcp
+   ```
+
+   ```toml
+   # Codex（~/.codex/config.toml）
+   [mcp_servers.ccinnstarrocks]
+   command = "/Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks"
+   args = ["mcp"]
+   ```
+
+   ```json
+   // Claude Desktop（claude_desktop_config.json）及其他使用 JSON 配置的客户端
+   { "mcpServers": { "ccinnstarrocks": { "command": "/Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks", "args": ["mcp"] } } }
+   ```
+
+3. 直接提问，例如：*"shop 库里哪些物化视图最近一次刷新失败了？"*、*"shop.orders 有没有数据倾斜？哪个城市的营收最高？"*
+
+**工具列表**
+
+| 分组 | 工具 |
+|---|---|
+| 连接 | `list_connections` |
+| 目录 | `list_catalogs`、`list_databases`、`list_tables`、`describe_table` |
+| 表洞察 | `get_partitions`、`analyze_tablet_skew`、`get_materialized_view` |
+| 集群 | `get_running_tasks`、`list_cluster_nodes` |
+| SQL | `run_query`、`explain_query`，以及 `execute_statement`（仅限读写连接） |
+
+`list_tables` 会返回每个对象的类型（表、异步或同步物化视图、视图、外表）、数据模型，以及物化视图的刷新健康状态。
+
+**安全**
+
+- 密码保存在钥匙串中，AI 永远看不到。
+- 只有你启用的连接才可见。
+- `run_query` 只接受单条只读语句（`SELECT`、`WITH`、`SHOW`、`DESC`、`EXPLAIN`），由应用自带的 SQL 词法分析器校验，而不是依赖模型自觉。
+- 结果最多 1,000 行（默认 200 行）、约 256 KB；语句默认 30 秒超时。
+- 在 AI 客户端取消请求时会发送 `KILL QUERY`。
+- `--read-only` 把所有连接限制为只读；`--profile <名称>` 指定默认连接。
+- 每次调用都会记录到 `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`。
 
 ## 从源码构建
 

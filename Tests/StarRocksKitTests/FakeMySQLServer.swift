@@ -117,6 +117,11 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
             case 0x03:
                 let sql = String(decoding: packet.payload.dropFirst(), as: UTF8.self)
                 state.withLockUnchecked { $0.queries.append(sql) }
+                // Session setup issued by every connection.
+                if sql.uppercased().hasPrefix("SET ") {
+                    enqueue([Self.ok()], firstSequence: 1)
+                    return
+                }
                 switch handler(sql) {
                 case let .packets(packets): enqueue(packets, firstSequence: 1)
                 case .hang: break

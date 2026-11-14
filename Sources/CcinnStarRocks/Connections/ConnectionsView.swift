@@ -140,6 +140,10 @@ private struct ProfileRow: View {
             Spacer(minLength: 0)
             if profile.ssh != nil { Image(systemName: "lock.shield").foregroundStyle(.secondary).help("SSH tunnel") }
             if profile.confirmMutations { Image(systemName: "exclamationmark.shield").foregroundStyle(.orange).help("Confirms data changes") }
+            if profile.mcpAccess != .disabled {
+                Image(systemName: "sparkles").foregroundStyle(profile.mcpAccess == .readWrite ? .orange : Theme.accent)
+                    .help("AI access via MCP: \(profile.mcpAccess.displayName)")
+            }
             if profile.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow).imageScale(.small) }
         }
         .padding(.vertical, 2)
@@ -234,6 +238,16 @@ struct ConnectionEditorView: View {
                             Toggle("Connect through an SSH tunnel", isOn: $draft.sshEnabled)
                             if draft.sshEnabled { sshFields }
                         }
+                        Section {
+                            Picker("AI access (MCP)", selection: $draft.mcpAccess) {
+                                ForEach(MCPAccess.allCases) { Text($0.displayName).tag($0) }
+                            }
+                            Text(mcpHint)
+                                .font(.caption)
+                                .foregroundStyle(draft.mcpAccess == .readWrite ? Color.orange : Color.secondary)
+                        } header: {
+                            Text("AI access")
+                        }
                         Section("Safety & timeouts") {
                             Toggle("Ask before running statements that change data or schema", isOn: $draft.confirmMutations)
                             TextField("Connect timeout (seconds)", value: $draft.connectTimeout, format: .number)
@@ -255,6 +269,14 @@ struct ConnectionEditorView: View {
             }
             Divider()
             actionBar
+        }
+    }
+
+    private var mcpHint: String {
+        switch draft.mcpAccess {
+        case .disabled: "AI clients connected to the CcinnStarRocks MCP server cannot see this connection. Set up the server in Settings → MCP."
+        case .readOnly: "AI clients may browse metadata and run read-only queries (SELECT, SHOW, DESC, EXPLAIN), limited to 1,000 rows per call."
+        case .readWrite: "AI clients may also run statements that change data or schema. Use only for development clusters."
         }
     }
 

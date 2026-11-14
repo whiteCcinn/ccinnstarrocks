@@ -190,8 +190,11 @@ struct StarRocksIntegrationTests {
         defer { Task { await client.close() } }
         let processes = try await client.processList()
         #expect(!processes.isEmpty)
+        // StarRocks expires old load records, so create a fresh (idempotent) one: an upsert into a unique-key table.
+        let label = "ccinn_it_\(UInt32.random(in: 0...UInt32.max))"
+        _ = try await client.execute("INSERT INTO shop.events_latest WITH LABEL \(label) SELECT 0, '2024-06-01 00:00:00', 'online'")
         let loads = try await client.loads(database: "shop")
-        #expect(loads.contains { $0.state == "FINISHED" && $0.sinkRows == 20000 })
+        #expect(loads.contains { $0.label == label && $0.state == "FINISHED" && $0.sinkRows == 1 })
         _ = try await client.routineLoads(database: "shop")
         let alters = try await client.alterJobs(database: "shop")
         #expect(alters.contains { $0.kind == .rollup && $0.indexName == "mv_orders_by_channel" })

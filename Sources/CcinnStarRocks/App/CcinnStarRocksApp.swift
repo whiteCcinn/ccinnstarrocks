@@ -19,9 +19,24 @@ struct CcinnStarRocksApp: App {
         .commands { AppCommands() }
 
         Settings {
+            SettingsTabs()
+            .frame(width: 620)
+            .tint(Theme.accent)
+        }
+    }
+}
+
+private struct SettingsTabs: View {
+    @AppStorage("settingsTab") private var tab = "general"
+
+    var body: some View {
+        TabView(selection: $tab) {
             SettingsView()
-                .frame(width: 480)
-                .tint(Theme.accent)
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag("general")
+            MCPSettingsView(store: AppServices.shared.profiles)
+                .tabItem { Label("MCP", systemImage: "sparkles") }
+                .tag("mcp")
         }
     }
 }
@@ -45,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Per-window root: connection manager, progress, or workspace.
 struct RootView: View {
+    @Environment(\.openSettings) private var openSettings
     @State private var session = WindowSession()
     private let store = AppServices.shared.profiles
 
@@ -66,7 +82,14 @@ struct RootView: View {
         .focusedSceneValue(\.windowSession, session)
         .navigationTitle(windowTitle)
         .onDisappear { session.disconnect() }
-        .task { LaunchArguments.consume(into: session, store: store) }
+        .task {
+            LaunchArguments.consume(into: session, store: store)
+            let arguments = ProcessInfo.processInfo.arguments
+            if let index = arguments.firstIndex(of: "--settings"), arguments.indices.contains(index + 1) {
+                UserDefaults.standard.set(arguments[index + 1], forKey: "settingsTab")
+                openSettings()
+            }
+        }
     }
 
     private var phaseKey: Int {
@@ -186,7 +209,12 @@ enum SnapshotTool {
         }
         let quit = arguments.contains("--quit-after-snapshot")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            if let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.frame.width > 400 }),
+            var candidates = [NSApp.keyWindow].compactMap { $0 } + NSApp.windows
+            if let titleIndex = arguments.firstIndex(of: "--snapshot-window"), arguments.indices.contains(titleIndex + 1) {
+                let title = arguments[titleIndex + 1]
+                candidates = NSApp.windows.filter { $0.title.localizedCaseInsensitiveContains(title) } + candidates
+            }
+            if let window = candidates.first(where: { $0.isVisible && $0.contentView != nil && $0.frame.width > 400 }),
                let view = window.contentView?.superview ?? window.contentView,
                let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                 view.cacheDisplay(in: view.bounds, to: bitmap)

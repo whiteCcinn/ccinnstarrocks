@@ -8,6 +8,23 @@ public enum ProfileColor: String, Codable, CaseIterable, Identifiable, Sendable 
     public var id: String { rawValue }
 }
 
+/// Whether AI clients may use a connection through the built-in MCP server.
+public enum MCPAccess: String, Codable, CaseIterable, Identifiable, Sendable {
+    case disabled
+    case readOnly
+    case readWrite
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .disabled: "Off"
+        case .readOnly: "Read-only"
+        case .readWrite: "Read & write"
+        }
+    }
+}
+
 /// A saved connection. Never contains secrets: passwords live in a `SecretStore` (the Keychain).
 public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
@@ -24,13 +41,15 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     /// Ask before running statements that change data or schema.
     public var confirmMutations: Bool
     public var connectTimeout: Double
+    /// AI access through the MCP server (off unless the user opts in).
+    public var mcpAccess: MCPAccess
     public var createdAt: Date
     public var lastConnectedAt: Date?
 
     public init(id: UUID = UUID(), name: String = "", host: String = "127.0.0.1", port: Int = 9030, username: String = "root",
                 defaultDatabase: String? = nil, defaultCatalog: String? = nil, color: ProfileColor = .none, isFavorite: Bool = false,
                 ssh: SSHTunnelConfiguration? = nil, allowCleartextPassword: Bool = false, confirmMutations: Bool = false,
-                connectTimeout: Double = 10, createdAt: Date = Date(), lastConnectedAt: Date? = nil) {
+                connectTimeout: Double = 10, mcpAccess: MCPAccess = .disabled, createdAt: Date = Date(), lastConnectedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.host = host
@@ -44,8 +63,30 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.allowCleartextPassword = allowCleartextPassword
         self.confirmMutations = confirmMutations
         self.connectTimeout = connectTimeout
+        self.mcpAccess = mcpAccess
         self.createdAt = createdAt
         self.lastConnectedAt = lastConnectedAt
+    }
+
+    /// Tolerant decoding: fields added in later versions fall back to their defaults.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        color = try container.decodeIfPresent(ProfileColor.self, forKey: .color) ?? .none
+        isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
+        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 9030
+        username = try container.decodeIfPresent(String.self, forKey: .username) ?? "root"
+        defaultDatabase = try container.decodeIfPresent(String.self, forKey: .defaultDatabase)
+        defaultCatalog = try container.decodeIfPresent(String.self, forKey: .defaultCatalog)
+        ssh = try container.decodeIfPresent(SSHTunnelConfiguration.self, forKey: .ssh)
+        allowCleartextPassword = try container.decodeIfPresent(Bool.self, forKey: .allowCleartextPassword) ?? false
+        confirmMutations = try container.decodeIfPresent(Bool.self, forKey: .confirmMutations) ?? false
+        connectTimeout = try container.decodeIfPresent(Double.self, forKey: .connectTimeout) ?? 10
+        mcpAccess = (try? container.decodeIfPresent(MCPAccess.self, forKey: .mcpAccess)) ?? .disabled
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
     }
 
     public static func recents(_ profiles: [ConnectionProfile]) -> [ConnectionProfile] {
@@ -192,7 +233,11 @@ public final class ProfileRepository: Sendable {
     public let directory: URL
     private let secrets: any SecretStore
 
+    /// `CCINNSTARROCKS_PROFILE_DIR` overrides the location (used by tests and for portable setups).
     public static var defaultDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["CCINNSTARROCKS_PROFILE_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("CcinnStarRocks", isDirectory: true)

@@ -7,19 +7,7 @@ import StarRocksKit
 enum ConnectionOpener {
     static func open(profile: ConnectionProfile, password: String, sshSecret: String?,
                      progress: @escaping @Sendable (String) -> Void) async throws -> StarRocksClient {
-        let configuration = profile.configuration(password: password)
-        var tunnel: SSHTunnel?
-        if let ssh = profile.ssh {
-            progress("Opening SSH tunnel through \(ssh.host)…")
-            tunnel = try await SSHTunnel.open(configuration: ssh, secret: sshSecret, remote: configuration.endpoint)
-        }
-        progress("Connecting to \(profile.endpoint) as \(profile.username)…")
-        do {
-            return try await StarRocksClient.connect(configuration, poolSize: 4, tunnel: tunnel)
-        } catch {
-            tunnel?.close()
-            throw error
-        }
+        try await ClientOpener.open(profile: profile, password: password, sshSecret: sshSecret, progress: progress)
     }
 }
 

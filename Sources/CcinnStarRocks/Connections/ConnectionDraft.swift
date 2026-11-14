@@ -27,6 +27,7 @@ final class ConnectionDraft {
     var allowCleartextPassword: Bool
     var confirmMutations: Bool
     var connectTimeout: Double
+    var mcpAccess: MCPAccess
     var sshEnabled: Bool
     var ssh: SSHTunnelConfiguration
     var sshSecret: String
@@ -51,6 +52,7 @@ final class ConnectionDraft {
         allowCleartextPassword = base.allowCleartextPassword
         confirmMutations = base.confirmMutations
         connectTimeout = base.connectTimeout
+        mcpAccess = base.mcpAccess
         sshEnabled = base.ssh != nil
         ssh = base.ssh ?? SSHTunnelConfiguration(host: "", username: NSUserName(), authentication: .agent)
         sshSecret = profile.flatMap(store.sshSecret(for:)) ?? ""
@@ -69,6 +71,7 @@ final class ConnectionDraft {
         profile.allowCleartextPassword = allowCleartextPassword
         profile.confirmMutations = confirmMutations
         profile.connectTimeout = min(max(connectTimeout, 1), 120)
+        profile.mcpAccess = mcpAccess
         profile.ssh = sshEnabled ? ssh : nil
         return profile
     }

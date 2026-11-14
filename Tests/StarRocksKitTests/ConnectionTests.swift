@@ -75,6 +75,12 @@ struct ConnectionTests {
         #expect(!result.isTruncated)
     }
 
+    @Test func setsSessionVariablesAfterConnecting() async throws {
+        let server = FakeMySQLServer()
+        _ = try await connect(server)
+        #expect(server.queries == ["SET new_planner_optimize_timeout = '30000'"])
+    }
+
     @Test func okPacketReportsAffectedRows() async throws {
         let server = FakeMySQLServer { _ in .packets([FakeMySQLServer.ok(affectedRows: 42)]) }
         let connection = try await connect(server)

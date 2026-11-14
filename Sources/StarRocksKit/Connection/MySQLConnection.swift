@@ -70,13 +70,20 @@ public actor MySQLConnection {
         let endpoint = configuration.endpoint
         let timeout = max(1, configuration.connectTimeout)
         let transport = try await transportFactory(endpoint, TransportOptions(connectTimeout: timeout))
-        let connection: MySQLConnection
+        // Handshake and session setup share one deadline; on timeout or cancellation the socket is closed.
         do {
-            connection = try await Deadline.run(seconds: timeout, timeoutError: {
-                StarRocksError(.timeout, "\(endpoint) did not complete the MySQL handshake within \(Int(timeout))s")
+            return try await Deadline.run(seconds: timeout, timeoutError: {
+                StarRocksError(.timeout, "\(endpoint) did not complete the connection setup within \(Int(timeout))s")
             }) {
                 try await withTaskCancellationHandler {
-                    try await Handshake.perform(transport: transport, configuration: configuration)
+                    let connection = try await Handshake.perform(transport: transport, configuration: configuration)
+                    do {
+                        try await connection.applyInitialContext(configuration)
+                    } catch {
+                        await connection.close()
+                        throw error
+                    }
+                    return connection
                 } onCancel: {
                     transport.close()
                 }
@@ -86,16 +93,18 @@ public actor MySQLConnection {
             if Task.isCancelled { throw StarRocksError.cancelled() }
             throw Self.mapError(error, endpoint: endpoint)
         }
-        do {
-            try await connection.applyInitialContext(configuration)
-        } catch {
-            await connection.close()
-            throw error
-        }
-        return connection
     }
 
     private func applyInitialContext(_ configuration: ConnectionConfiguration) async throws {
+        for variable in configuration.sessionVariables {
+            let name = variable.name.filter { $0.isLetter || $0.isNumber || $0 == "_" }
+            guard !name.isEmpty else { continue }
+            do {
+                _ = try await execute("SET \(name) = \(SQLText.literal(variable.value))")
+            } catch let error as StarRocksError where error.kind == .server {
+                continue // unknown variable on this server version
+            }
+        }
         guard let catalog = configuration.catalog?.trimmingCharacters(in: .whitespaces), !catalog.isEmpty,
               catalog != SQLText.defaultCatalog else { return }
         _ = try await execute("SET CATALOG \(SQLText.quoteIdentifier(catalog))")

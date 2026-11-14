@@ -74,7 +74,8 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - SSH tunnels through your system OpenSSH (agent, key or password).
   - LDAP users via an opt-in `mysql_clear_password`.
   - Optional confirmation before statements that change data or schema.
-- **Secure by default.** Passwords live in the macOS Keychain; nothing is collected or sent anywhere.
+- **AI access through MCP.** A built-in Model Context Protocol server lets Claude Code, Codex and Claude Desktop query the connections you opt in, read-only by default. See [MCP server](#mcp-server-let-ai-query-starrocks).
+- **Secure by default.** Passwords live in the macOS Keychain; nothing is collected or sent anywhere unless you enable AI access.
 
 ## Compatibility
 
@@ -127,6 +128,54 @@ Useful shortcuts:
 | **⌘T** | New query |
 | **⇧⌘R** | Refresh the catalog |
 | **⇧⌘D** | Disconnect |
+
+## MCP server: let AI query StarRocks
+
+CcinnStarRocks has a built-in **Model Context Protocol** server. AI assistants such as **Claude Code**, **Codex**, **Claude Desktop** or Cursor can use it to explore your clusters and run queries through your saved connections.
+
+1. Open a connection in CcinnStarRocks and set **AI access (MCP)** to **Read-only** or **Read & write**. Connections are off by default.
+2. Register the server. **Settings → MCP** shows these snippets with the right path, ready to copy:
+
+   ```bash
+   # Claude Code
+   claude mcp add ccinnstarrocks -- /Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks mcp
+   ```
+
+   ```toml
+   # Codex (~/.codex/config.toml)
+   [mcp_servers.ccinnstarrocks]
+   command = "/Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks"
+   args = ["mcp"]
+   ```
+
+   ```json
+   // Claude Desktop (claude_desktop_config.json) and other JSON-configured clients
+   { "mcpServers": { "ccinnstarrocks": { "command": "/Applications/CcinnStarRocks.app/Contents/MacOS/CcinnStarRocks", "args": ["mcp"] } } }
+   ```
+
+3. Ask questions such as *"Which materialized views in `shop` failed their last refresh?"* or *"Is `shop.orders` skewed, and which city has the most revenue?"*
+
+**Tools**
+
+| Group | Tools |
+|---|---|
+| Connections | `list_connections` |
+| Catalog | `list_catalogs`, `list_databases`, `list_tables`, `describe_table` |
+| Table insights | `get_partitions`, `analyze_tablet_skew`, `get_materialized_view` |
+| Cluster | `get_running_tasks`, `list_cluster_nodes` |
+| SQL | `run_query`, `explain_query`, and `execute_statement` (read & write connections only) |
+
+`list_tables` reports each object's kind (table, async or sync materialized view, view, external table), its model and the refresh health of materialized views.
+
+**Safety**
+
+- Passwords stay in the Keychain and are never shown to the AI.
+- Only connections you enabled are visible.
+- `run_query` accepts a single read-only statement (`SELECT`, `WITH`, `SHOW`, `DESC`, `EXPLAIN`). The app checks this with its own SQL lexer; it does not trust the model.
+- Results are capped at 1,000 rows (200 by default) and about 256 KB. Statements time out after 30 s by default.
+- Cancelling a request in the AI client sends `KILL QUERY`.
+- `--read-only` caps every connection at read-only; `--profile <name>` picks the default connection.
+- Every call is logged to `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`.
 
 ## Building from source
 

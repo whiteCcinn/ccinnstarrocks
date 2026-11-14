@@ -61,6 +61,12 @@ final class ProfileStore {
         return try? save(copy, password: password(for: profile), sshSecret: sshSecret(for: profile))
     }
 
+    func setMCPAccess(_ access: MCPAccess, for profile: ConnectionProfile) {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[index].mcpAccess = access
+        try? persist()
+    }
+
     func toggleFavorite(_ profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].isFavorite.toggle()
