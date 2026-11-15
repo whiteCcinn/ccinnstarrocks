@@ -13,6 +13,8 @@ jobs:
   build-and-test:
     name: Build & unit tests
     runs-on: macos-15
+    # A successful run takes about 3 minutes; a hung test must not burn 6 hours of macOS minutes.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
