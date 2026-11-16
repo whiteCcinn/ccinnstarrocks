@@ -58,7 +58,9 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
     - StarRocks functions.
   - Run the current statement, the selection or the whole script. Plain `SELECT`s get an automatic `LIMIT`.
   - `EXPLAIN` / `EXPLAIN COSTS`, and **real cancellation with `KILL QUERY`**.
-  - Errors are underlined at their exact position. Searchable history.
+  - Errors are underlined at their exact position, with the message next to the line. Unknown columns, tables and databases are found by name even when StarRocks reports no position. The marker follows your edits and disappears once you change the failing statement.
+  - Unclosed quotes, comments and parentheses are flagged as you type.
+  - Searchable history.
   - CSV / TSV / `INSERT` export.
 - **Charts from any query**
   - Results are charted automatically: a date column with numbers becomes a line chart, categories become bars, two categories become grouped bars, two numbers become a scatter plot.
@@ -67,13 +69,20 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
 - **Operations**
   - **Running now** shows queries, loads, MV refreshes and tasks, routine loads and schema changes at a glance, with auto-refresh.
   - Sessions with *Kill Query / Kill Connection*.
-  - Load jobs; routine loads with pause / resume / stop.
+  - **Loads** of every type, Stream Loads included:
+    - search by keyword in any field or in one field (label, table, error, job id, …); the search runs on the server, so older jobs are found too;
+    - filter by type and state, and optionally search `_statistics_.loads_history` for jobs the frontends no longer keep;
+    - each load shows its client IP, transaction, bytes, timings and error tracking query;
+    - internal `_statistics_` jobs are hidden unless you pick that database.
+  - Routine loads with pause / resume / stop.
   - Task runs, schema-change jobs, and FE / BE / CN nodes with disk, CPU and memory usage.
+  - **Configuration**: every variable and every FE and BE setting, with defaults. Values changed from the default and BE values that differ between nodes are marked. The view is read-only; **Edit in SQL Editor…** opens a pre-filled statement, and running it always asks for confirmation.
 - **Connectivity**
+  - **Multiple windows**, each with its own connection: File ▸ New Window (⌘N), **New Window with This Connection** (⇧⌘N, also the toolbar's New Window button), or **Open in New Window** on a saved connection.
   - Multiple catalogs (internal and external).
   - SSH tunnels through your system OpenSSH (agent, key or password).
   - LDAP users via an opt-in `mysql_clear_password`.
-  - Optional confirmation before statements that change data or schema.
+  - Optional confirmation before statements that change data or schema. Statements that change cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`) are always confirmed.
 - **AI access through MCP.** A built-in Model Context Protocol server lets Claude Code, Codex and Claude Desktop query the connections you opt in, read-only by default. See [MCP server](#mcp-server-let-ai-query-starrocks).
 - **Secure by default.** Passwords live in the macOS Keychain; nothing is collected or sent anywhere unless you enable AI access.
 
@@ -85,7 +94,7 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
 | 4.1 | shared-nothing | ✅ every release |
 | 3.1 – 4.x | shared-nothing / shared-data | expected to work |
 
-Metadata is read from `information_schema` (`tables_config`, `materialized_views`, `partitions_meta`, `task_runs`, `loads`, `routine_load_jobs`) with `SHOW` fallbacks. Every result is parsed **by column name**, so columns added or reordered in newer releases do not break the app. Features that need extra privileges, such as `ADMIN SHOW REPLICA DISTRIBUTION`, degrade with an explanation instead of failing. CcinnStarRocks runs on **macOS 14 Sonoma or later** (Apple silicon and Intel).
+Metadata is read from `information_schema` (`tables_config`, `materialized_views`, `partitions_meta`, `task_runs`, `loads`, `routine_load_jobs`, `be_configs`, `global_variables`, `verbose_session_variables`) and `_statistics_.loads_history` with `SHOW` fallbacks. Every result is parsed **by column name**, so columns added or reordered in newer releases do not break the app. Features that need extra privileges, such as `ADMIN SHOW REPLICA DISTRIBUTION`, degrade with an explanation instead of failing. CcinnStarRocks runs on **macOS 14 Sonoma or later** (Apple silicon and Intel).
 
 ## Screenshots
 
@@ -133,7 +142,9 @@ Useful shortcuts:
 | **⌘.** | Cancel the running statement |
 | **⌃Space** | Show completions |
 | **⌘/** | Comment or uncomment lines |
-| **⌘T** | New query |
+| **⌘T** | New query (each tab has its own session and runs independently) |
+| **⌘N** | New window (another cluster, or the same one) |
+| **⇧⌘N** | New window with this connection |
 | **⇧⌘R** | Refresh the catalog |
 | **⇧⌘D** | Disconnect |
 
@@ -182,6 +193,7 @@ CcinnStarRocks has a built-in **Model Context Protocol** server. AI assistants s
 - `run_query` accepts a single read-only statement (`SELECT`, `WITH`, `SHOW`, `DESC`, `EXPLAIN`). The app checks this with its own SQL lexer; it does not trust the model.
 - Results are capped at 1,000 rows (200 by default) and about 256 KB. Statements time out after 30 s by default.
 - Cancelling a request in the AI client sends `KILL QUERY`.
+- `execute_statement` never changes cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`): those need a confirmation in the app.
 - `--read-only` caps every connection at read-only; `--profile <name>` picks the default connection.
 - Every call is logged to `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`.
 

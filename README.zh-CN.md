@@ -58,7 +58,9 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
     - StarRocks 函数。
   - 可执行当前语句、选中内容或整个脚本，普通 `SELECT` 会自动加上 `LIMIT`。
   - `EXPLAIN` / `EXPLAIN COSTS`，以及**基于 `KILL QUERY` 的真正取消**。
-  - 错误会在精确位置下划线标出；历史记录可搜索。
+  - 错误会在精确位置下划线标出，并在该行末尾显示错误信息；即使 StarRocks 没有返回位置，也会按名称定位未知的列、表和数据库；标记会随编辑移动，修改出错语句后自动消失。
+  - 输入时即时提示未闭合的引号、注释和括号。
+  - 历史记录可搜索。
   - 支持导出为 CSV / TSV / `INSERT`。
 - **任意查询一键成图**
   - 自动推荐图表：日期列配数值生成折线图，分类配数值生成柱状图，两个分类生成分组柱状图，两个数值生成散点图。
@@ -67,13 +69,20 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
 - **运维视图**
   - **正在运行**：一屏汇总查询、导入、物化视图刷新与任务、Routine Load、Schema Change，并自动刷新。
   - 会话列表，可*终止查询 / 终止连接*。
-  - 导入任务；Routine Load 支持暂停 / 恢复 / 停止。
+  - **导入任务**（包括 Stream Load）：
+    - 可在任意字段或指定字段（Label、表、错误信息、Job ID 等）中按关键字搜索，搜索在服务端执行，较早的任务也能找到；
+    - 可按类型和状态筛选，并可同时搜索 `_statistics_.loads_history`，找回 FE 已不再保留的任务；
+    - 每个导入都会显示客户端 IP、事务、字节数、各阶段时间以及错误追踪查询；
+    - 默认隐藏 `_statistics_` 的内部统计任务，选择该数据库后才会显示。
+  - Routine Load 支持暂停 / 恢复 / 停止。
   - 任务运行记录、Schema Change 任务，以及 FE / BE / CN 节点的磁盘、CPU 与内存使用率。
+  - **配置**：所有变量以及所有 FE、BE 配置项和默认值；会标出与默认值不同的配置，以及在各 BE 节点之间取值不一致的配置。该视图只读，**在 SQL 编辑器中修改…** 只会打开预填好的语句，执行前一定会二次确认。
 - **连接能力**
+  - **多窗口**，每个窗口使用独立连接：文件 ▸ 新建窗口（⌘N），**用当前连接新建窗口**（⇧⌘N，也可点工具栏的“新建窗口”按钮），或在已保存的连接上选择**在新窗口中打开**。
   - 多 Catalog（内部与外部）。
   - 通过系统 OpenSSH 建立 SSH 隧道（agent、密钥或密码）。
   - 可选启用 `mysql_clear_password` 以支持 LDAP 用户。
-  - 可选在执行修改数据或结构的语句前二次确认。
+  - 可选在执行修改数据或结构的语句前二次确认；修改集群配置的语句（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`）始终需要二次确认。
 - **通过 MCP 接入 AI**：内置 Model Context Protocol 服务，让 Claude Code、Codex、Claude Desktop 查询你授权的连接（默认只读），详见 [MCP 服务](#mcp-服务让-ai-查询-starrocks)。
 - **默认安全**：密码保存在 macOS 钥匙串中；除非启用 AI 访问，不会收集或发送任何数据。
 
@@ -85,7 +94,7 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
 | 4.1 | 存算一体 | ✅ 每个版本均测试 |
 | 3.1 – 4.x | 存算一体 / 存算分离 | 预期可用 |
 
-元数据优先读取 `information_schema`（`tables_config`、`materialized_views`、`partitions_meta`、`task_runs`、`loads`、`routine_load_jobs`），不可用时回退到 `SHOW` 命令。所有结果都**按列名解析**，新版本增加或调整列顺序不会影响使用。需要额外权限的功能（如 `ADMIN SHOW REPLICA DISTRIBUTION`）会给出说明并优雅降级，而不是直接报错。CcinnStarRocks 支持 **macOS 14 Sonoma 及以上**（Apple 芯片与 Intel）。
+元数据优先读取 `information_schema`（`tables_config`、`materialized_views`、`partitions_meta`、`task_runs`、`loads`、`routine_load_jobs`、`be_configs`、`global_variables`、`verbose_session_variables`）与 `_statistics_.loads_history`，不可用时回退到 `SHOW` 命令。所有结果都**按列名解析**，新版本增加或调整列顺序不会影响使用。需要额外权限的功能（如 `ADMIN SHOW REPLICA DISTRIBUTION`）会给出说明并优雅降级，而不是直接报错。CcinnStarRocks 支持 **macOS 14 Sonoma 及以上**（Apple 芯片与 Intel）。
 
 ## 截图
 
@@ -133,7 +142,9 @@ CcinnStarRocks 每天也会在后台自动检查一次，可以在 **设置 → 
 | **⌘.** | 取消正在执行的语句 |
 | **⌃Space** | 显示补全 |
 | **⌘/** | 注释 / 取消注释所选行 |
-| **⌘T** | 新建查询 |
+| **⌘T** | 新建查询（每个标签页使用独立会话，可同时执行） |
+| **⌘N** | 新建窗口（连接另一个集群，或同一集群） |
+| **⇧⌘N** | 用当前连接新建窗口 |
 | **⇧⌘R** | 刷新 Catalog |
 | **⇧⌘D** | 断开连接 |
 
@@ -182,6 +193,7 @@ CcinnStarRocks 内置 **Model Context Protocol** 服务，**Claude Code**、**Co
 - `run_query` 只接受单条只读语句（`SELECT`、`WITH`、`SHOW`、`DESC`、`EXPLAIN`），由应用自带的 SQL 词法分析器校验，而不是依赖模型自觉。
 - 结果最多 1,000 行（默认 200 行）、约 256 KB；语句默认 30 秒超时。
 - 在 AI 客户端取消请求时会发送 `KILL QUERY`。
+- `execute_statement` 不会修改集群配置（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`），这类修改必须在应用内二次确认。
 - `--read-only` 把所有连接限制为只读；`--profile <名称>` 指定默认连接。
 - 每次调用都会记录到 `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`。
 
