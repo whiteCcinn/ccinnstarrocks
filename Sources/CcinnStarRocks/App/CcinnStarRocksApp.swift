@@ -8,8 +8,9 @@ struct CcinnStarRocksApp: App {
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
 
     var body: some Scene {
-        WindowGroup("CcinnStarRocks", id: "main") {
-            RootView()
+        // Every window has its own connection. A request opens a window that connects right away.
+        WindowGroup("CcinnStarRocks", id: RootView.windowGroupID, for: WindowRequest.self) { $request in
+            RootView(request: request)
                 .frame(minWidth: 1040, minHeight: 640)
                 .preferredColorScheme(AppearancePreference(rawValue: appearance)?.colorScheme)
                 .tint(Theme.accent)
@@ -71,7 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Per-window root: connection manager, progress, or workspace.
 struct RootView: View {
+    static let windowGroupID = "main"
+
+    /// Set when the window was opened for a connection (Open in New Window, New Window with This Connection).
+    let request: WindowRequest?
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @State private var session = WindowSession()
     private let store = AppServices.shared.profiles
 
@@ -95,7 +101,11 @@ struct RootView: View {
         .presentsSoftwareUpdates()
         .onDisappear { session.disconnect() }
         .task {
-            LaunchArguments.consume(into: session, store: store)
+            if let request {
+                session.connect(request, store: store)
+                return
+            }
+            LaunchArguments.consume(into: session, store: store) { openWindow(id: Self.windowGroupID, value: $0) }
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--settings"), arguments.indices.contains(index + 1) {
                 UserDefaults.standard.set(arguments[index + 1], forKey: "settingsTab")
@@ -149,12 +159,12 @@ struct ConnectingView: View {
 ///  [--section overview|partitions|tablets|refreshes|columns|ddl|data] [--sql "…"] [--auto-run]
 ///  [--view grid|chart|plan] [--operations running|sessions|loads|cluster|configuration|…]
 ///  [--load-type STREAM_LOAD] [--load-database db] [--load-search text] [--load-history]
-///  [--config-scope variables|frontend|backend] [--config-search text] [--profile name]`
+///  [--config-scope variables|frontend|backend] [--config-search text] [--duplicate-window] [--profile name]`
 @MainActor
 enum LaunchArguments {
     private static var consumed = false
 
-    static func consume(into session: WindowSession, store: ProfileStore) {
+    static func consume(into session: WindowSession, store: ProfileStore, openWindow: @escaping @MainActor (WindowRequest) -> Void) {
         guard !consumed else { return }
         consumed = true
         let arguments = ProcessInfo.processInfo.arguments
@@ -201,6 +211,7 @@ enum LaunchArguments {
                         }
                     }
                 }
+                if arguments.contains("--duplicate-window"), let request = session.duplicateRequest() { openWindow(request) }
                 if let raw = value("--operations"),
                    let section = OperationsModel.Section.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "").hasPrefix(raw.lowercased()) }) {
                     if section == .loads, value("--load-type") != nil || value("--load-database") != nil {
@@ -306,9 +317,17 @@ extension FocusedValues {
 
 struct AppCommands: Commands {
     @FocusedValue(\.windowSession) private var session
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
+            // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.
+            Button("New Window with This Connection") {
+                if let request = session?.duplicateRequest() { openWindow(id: RootView.windowGroupID, value: request) }
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(session?.workspace == nil)
+            Divider()
             Button("New Query") { session?.workspace?.openSQL() }
                 .keyboardShortcut("t", modifiers: .command)
                 .disabled(session?.workspace == nil)
