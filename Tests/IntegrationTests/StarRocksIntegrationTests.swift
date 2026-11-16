@@ -206,6 +206,84 @@ struct StarRocksIntegrationTests {
     }
 
     @Test(arguments: IntegrationEnvironment.targets)
+    func loadSearchFiltersOnTheServer(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let token = String(UInt32.random(in: 0...UInt32.max), radix: 36)
+        let label = "ccinn_it_Search_\(token)"
+        _ = try await client.execute("INSERT INTO shop.events_latest WITH LABEL \(label) SELECT 0, '2024-06-01 00:00:00', 'online'")
+
+        // Case-insensitive label fragment, scoped to the field, type and state.
+        let found = try await client.searchLoads(LoadFilter(keyword: "SEARCH_\(token.uppercased())", field: .label, type: "INSERT", state: .finished))
+        #expect(found.jobs.map(\.label) == [label])
+        #expect(!found.filteredOnClient)
+        #expect(try await client.searchLoads(LoadFilter(keyword: token, type: "STREAM_LOAD")).jobs.isEmpty)
+        #expect(try await client.searchLoads(LoadFilter(keyword: token, field: .error)).jobs.isEmpty)
+
+        // Statistics jobs (written every minute) are hidden unless their database is chosen.
+        let all = try await client.searchLoads(LoadFilter(limit: 2_000))
+        #expect(!all.jobs.contains { $0.database == "_statistics_" })
+        let statistics = try await client.searchLoads(LoadFilter(database: "_statistics_", limit: 50))
+        #expect(statistics.jobs.allSatisfy { $0.database == "_statistics_" })
+
+        // History is readable by root on 3.3+ and merges without duplicates.
+        let withHistory = try await client.searchLoads(LoadFilter(database: "shop", limit: 2_000), includeHistory: true)
+        #expect(withHistory.historyError == nil)
+        #expect(Set(withHistory.jobs.map(\.id)).count == withHistory.jobs.count)
+        #expect(withHistory.jobs.contains { $0.label == label })
+    }
+
+    @Test(arguments: IntegrationEnvironment.targets)
+    func clusterConfiguration(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+
+        let frontend = try await client.frontendConfig()
+        let keep = try #require(frontend.first { $0.name == "label_keep_max_second" })
+        #expect(keep.isMutable == true)
+        #expect(keep.type == "int")
+        #expect(ConfigStatement.edit(for: keep)?.contains("ADMIN SET FRONTEND CONFIG ('label_keep_max_second' = ") == true)
+
+        let backend = try await client.backendConfig()
+        let workers = try #require(backend.first { $0.name == "alter_tablet_worker_count" })
+        #expect(workers.defaultValue != nil)
+        #expect(!workers.nodes.isEmpty)
+        #expect(workers.nodes.allSatisfy { $0.host != nil }, "node ids map to hosts")
+        #expect(Set(backend.map(\.id)).count == backend.count, "one row per name")
+
+        // A changed global variable is reported as modified, then restored.
+        let before = try #require(try await client.variables().first { $0.name == "query_timeout" })
+        let original = try #require(before.value)
+        #expect(before.defaultValue == "300")
+        _ = try await client.execute("SET GLOBAL query_timeout = 301")
+        let changed: ConfigItem?
+        do {
+            changed = try await client.variables().first { $0.name == "query_timeout" }
+        } catch {
+            _ = try? await client.execute("SET GLOBAL query_timeout = \(original)")
+            throw error
+        }
+        _ = try await client.execute("SET GLOBAL query_timeout = \(original)")
+        #expect(changed?.value == "301")
+        #expect(changed?.isModified == true)
+        // Stock clusters must not look modified because of encodings or placeholders.
+        let stock = try await client.variables()
+        #expect(stock.first { $0.name == "sql_mode" }?.isModified != true)
+    }
+
+    @Test(arguments: IntegrationEnvironment.targets)
+    func configurationPrivilegesDegradePerScope(target: IntegrationEnvironment.Target) async throws {
+        // `ccinn` holds the root role but it is not activated by default: no OPERATE on SYSTEM.
+        let client = try await IntegrationEnvironment.client(target, user: "ccinn", password: "ccinn-secret")
+        defer { Task { await client.close() } }
+        #expect(try await !client.variables().isEmpty)
+        await #expect { _ = try await client.frontendConfig() } throws: { ($0 as? StarRocksError)?.message.contains("OPERATE") == true }
+        await #expect { _ = try await client.backendConfig() } throws: { ($0 as? StarRocksError)?.message.contains("OPERATE") == true }
+        let loads = try await client.searchLoads(LoadFilter(), includeHistory: true)
+        #expect(loads.historyError?.contains("loads_history") == true)
+    }
+
+    @Test(arguments: IntegrationEnvironment.targets)
     func sessionKeepsContextAndCancels(target: IntegrationEnvironment.Target) async throws {
         let client = try await IntegrationEnvironment.client(target)
         defer { Task { await client.close() } }

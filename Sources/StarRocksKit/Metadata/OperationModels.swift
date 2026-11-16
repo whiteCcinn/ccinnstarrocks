@@ -43,7 +43,8 @@ public struct SessionProcess: Sendable, Hashable, Identifiable {
     }
 }
 
-/// A load job (Broker Load, INSERT, Spark Load, …) from `information_schema.loads` or `SHOW LOAD`.
+/// A load job of any type (Stream Load, Broker Load, INSERT, Spark Load, …) from `information_schema.loads`,
+/// `_statistics_.loads_history` or `SHOW LOAD`.
 public struct LoadJob: Sendable, Hashable, Identifiable {
     public var jobID: String
     public var label: String
@@ -55,21 +56,33 @@ public struct LoadJob: Sendable, Hashable, Identifiable {
     public var type: String?
     public var priority: String?
     public var scanRows: Int64?
+    public var scanBytes: Int64?
     public var filteredRows: Int64?
+    public var unselectedRows: Int64?
     public var sinkRows: Int64?
     public var createTime: String?
     public var startTime: String?
+    public var commitTime: String?
     public var finishTime: String?
     public var errorMessage: String?
     public var trackingSQL: String?
     public var warehouse: String?
+    public var profileID: String?
+    public var rejectedRecordPath: String?
+    /// Raw JSON (`client_ip`, `load_id`, `txn_id`, timings); parse with `keyValues(json:)` when shown.
+    public var runtimeDetails: String?
+    /// Raw JSON of the job properties (`timeout`, …).
+    public var properties: String?
+    public var source: LoadSource = .live
 
-    public var id: String { jobID + label }
+    /// Unique within a merged list (see `LoadSearchResult.merge`).
+    public var id: String { dedupeKey }
 
     public init(record: Record, database fallbackDatabase: String? = nil) {
         jobID = record.text("JOB_ID", "ID", "JobId") ?? ""
         label = record.text("LABEL", "Label") ?? ""
-        database = record.text("DB_NAME") ?? fallbackDatabase
+        // StarRocks 3.1/3.2 call the column DATABASE_NAME.
+        database = record.text("DB_NAME", "DATABASE_NAME") ?? fallbackDatabase
         table = record.text("TABLE_NAME")
         user = record.text("USER")
         state = record.text("STATE", "State") ?? "UNKNOWN"
@@ -77,18 +90,82 @@ public struct LoadJob: Sendable, Hashable, Identifiable {
         type = record.text("TYPE", "Type")
         priority = record.text("PRIORITY", "Priority")
         scanRows = record.int("SCAN_ROWS", "ScanRows")
+        scanBytes = record.int("SCAN_BYTES", "ScanBytes")
         filteredRows = record.int("FILTERED_ROWS", "FilteredRows")
+        unselectedRows = record.int("UNSELECTED_ROWS", "UnselectedRows")
         sinkRows = record.int("SINK_ROWS", "SinkRows")
         createTime = record.text("CREATE_TIME", "CreateTime")
         startTime = record.text("LOAD_START_TIME", "LoadStartTime")
+        commitTime = record.text("LOAD_COMMIT_TIME", "LoadCommitTime")
         finishTime = record.text("LOAD_FINISH_TIME", "LoadFinishTime")
         errorMessage = record.text("ERROR_MSG", "ErrorMsg")
         trackingSQL = record.text("TRACKING_SQL", "TrackingSQL")
         warehouse = record.text("WAREHOUSE", "Warehouse")
+        profileID = record.text("PROFILE_ID", "ProfileId")
+        rejectedRecordPath = record.text("REJECTED_RECORD_PATH", "RejectedRecordPath")
+        runtimeDetails = record.text("RUNTIME_DETAILS", "RuntimeDetails")
+        properties = record.text("PROPERTIES", "Properties")
     }
 
+    /// Not finished or cancelled. Matches the server-side `STATE NOT IN ('FINISHED', 'CANCELLED')` and covers
+    /// Stream Load states such as `BEFORE_LOAD`, `PREPARING` and `COMMITED`.
     public var isActive: Bool {
-        ["PENDING", "QUEUEING", "LOADING", "ETL", "PREPARED", "COMMITTED"].contains(state.uppercased())
+        !["FINISHED", "CANCELLED", "UNKNOWN"].contains(state.uppercased())
+    }
+
+    public var isStreamLoad: Bool { type?.uppercased() == "STREAM_LOAD" }
+
+    /// `CANCEL LOAD` does not apply to Stream Loads (cancelled by their HTTP client) or routine load tasks
+    /// (paused or stopped through the routine load job).
+    public var canCancel: Bool {
+        guard isActive, database != nil else { return false }
+        return !["STREAM_LOAD", "ROUTINE_LOAD"].contains(type?.uppercased() ?? "")
+    }
+
+    public static func displayName(forType type: String?) -> String {
+        switch type?.uppercased() {
+        case nil: ""
+        case "STREAM_LOAD": "Stream Load"
+        case "BROKER": "Broker Load"
+        case "SPARK": "Spark Load"
+        case "ROUTINE_LOAD": "Routine Load"
+        default: type ?? ""
+        }
+    }
+
+    public struct KeyValue: Sendable, Hashable {
+        public var key: String
+        public var value: String
+
+        public init(key: String, value: String) {
+            self.key = key
+            self.value = value
+        }
+    }
+
+    /// Flattens a JSON object into sorted key/value pairs; nested values are shown as compact JSON. Anything
+    /// that is not a JSON object yields nothing.
+    public static func keyValues(json: String?) -> [KeyValue] {
+        guard let data = json?.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? [String: Any] else { return [] }
+        return object.keys.sorted().map { key in KeyValue(key: key, value: display(object[key])) }
+    }
+
+    private static func display(_ value: Any?) -> String {
+        switch value {
+        case nil, is NSNull: return "null"
+        case let string as String: return string
+        case let number as NSNumber:
+            // JSON booleans arrive as NSNumber; tell them apart from 0/1 by their CF type.
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue ? "true" : "false" }
+            return number.stringValue
+        case let value?:
+            guard JSONSerialization.isValidJSONObject(value),
+                  let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]) else {
+                return "\(value)"
+            }
+            return String(decoding: data, as: UTF8.self)
+        }
     }
 }
 

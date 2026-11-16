@@ -6,20 +6,71 @@ extension StarRocksClient {
         try await execute("SHOW FULL PROCESSLIST").records.compactMap(SessionProcess.init(record:))
     }
 
-    /// Load jobs, newest first. Uses `information_schema.loads`, falling back to `SHOW LOAD` per database.
+    /// Load jobs of every type, newest first; internal `_statistics_` jobs are hidden unless that database is asked for.
     public func loads(database: String? = nil, activeOnly: Bool = false, limit: Int = 500) async throws -> [LoadJob] {
-        var predicates: [String] = []
-        if let database { predicates.append("DB_NAME = \(SQLText.literal(database))") }
-        if activeOnly { predicates.append("STATE NOT IN ('FINISHED', 'CANCELLED')") }
-        var sql = "SELECT * FROM information_schema.loads"
-        if !predicates.isEmpty { sql += " WHERE " + predicates.joined(separator: " AND ") }
-        sql += " ORDER BY CREATE_TIME DESC LIMIT \(max(1, min(limit, 10_000)))"
+        try await searchLoads(LoadFilter(database: database, state: activeOnly ? .active : .all, limit: limit)).jobs
+    }
+
+    /// Load jobs matching `filter`, newest first, from `information_schema.loads` and optionally
+    /// `_statistics_.loads_history`, queried concurrently (design D1–D4):
+    /// - the filter runs on the server, so matches beyond the newest `limit` jobs are found;
+    /// - when the server rejects a predicate (older versions name or lack columns differently), the query is retried
+    ///   with less of the filter (`LoadFilter.ServerScope`) and the rest is applied here; `SHOW LOAD FROM db` is
+    ///   the last resort for a chosen database;
+    /// - a history failure of any kind except cancellation is reported in `historyError`, never thrown.
+    public func searchLoads(_ filter: LoadFilter, includeHistory: Bool = false,
+                            historyTimeout: Double = StarRocksClient.metadataTimeout) async throws -> LoadSearchResult {
+        async let history = includeHistory ? loadHistory(filter, timeout: historyTimeout) : .success([])
+        let (live, filteredOnClient) = try await liveLoads(filter)
+        var historyJobs: [LoadJob] = []
+        var historyError: String?
+        switch await history {
+        case let .success(jobs): historyJobs = jobs
+        case let .failure(error):
+            if error.kind == .cancelled { throw error }
+            historyError = error.message
+        }
+        let merged = LoadSearchResult.merge(live: live, history: historyJobs, limit: filter.clampedLimit)
+        return LoadSearchResult(jobs: merged.jobs, reachedLimit: merged.reachedLimit, filteredOnClient: filteredOnClient, historyError: historyError)
+    }
+
+    /// Jobs still in FE memory, trying ever smaller server-side filters; `true` when the client had to filter.
+    private func liveLoads(_ filter: LoadFilter) async throws -> ([LoadJob], Bool) {
+        var lastError: StarRocksError?
+        var tried = Set<String>()
+        for scope in LoadFilter.ServerScope.allCases {
+            let sql = filter.sql(from: "information_schema.loads", scope: scope)
+            guard tried.insert(sql).inserted else { continue }
+            if scope == .stateOnly, let database = filter.database {
+                // A chosen database is listed completely by SHOW LOAD; the newest jobs overall may miss it.
+                let shown = try await execute("SHOW LOAD FROM \(SQLText.quoteIdentifier(database))").records
+                // SHOW LOAD lists the oldest job first.
+                return (shown.reversed().map { LoadJob(record: $0, database: database) }.filter(filter.matches), true)
+            }
+            do {
+                let jobs = try await execute(sql).records.map { LoadJob(record: $0) }
+                return scope == .full ? (jobs, false) : (jobs.filter(filter.matches), true)
+            } catch let error as StarRocksError where error.kind == .server {
+                lastError = error
+            }
+        }
+        throw lastError ?? StarRocksError(.server, "information_schema.loads could not be read")
+    }
+
+    private func loadHistory(_ filter: LoadFilter, timeout: Double) async -> Result<[LoadJob], StarRocksError> {
         do {
-            return try await execute(sql).records.map { LoadJob(record: $0) }
-        } catch let error as StarRocksError where error.kind == .server {
-            guard let database else { throw error }
-            let jobs = try await execute("SHOW LOAD FROM \(SQLText.quoteIdentifier(database))").records.map { LoadJob(record: $0, database: database) }
-            return (activeOnly ? jobs.filter(\.isActive) : jobs).reversed().prefix(limit).map { $0 }
+            let records = try await execute(filter.sql(from: "_statistics_.loads_history"), timeout: timeout).records
+            return .success(records.map { record in
+                var job = LoadJob(record: record)
+                job.source = .history
+                return job
+            })
+        } catch let error as StarRocksError {
+            return .failure(error)
+        } catch is CancellationError {
+            return .failure(StarRocksError.cancelled())
+        } catch {
+            return .failure(StarRocksError(.network, error.localizedDescription))
         }
     }
 

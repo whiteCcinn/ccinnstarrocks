@@ -147,7 +147,9 @@ struct ConnectingView: View {
 /// Developer conveniences and automated visual checks:
 /// `CcinnStarRocks --connect host:port [--user u] [--database db] [--object db.name]
 ///  [--section overview|partitions|tablets|refreshes|columns|ddl|data] [--sql "…"] [--auto-run]
-///  [--view grid|chart|plan] [--operations running|sessions|loads|cluster|…] [--profile name]`
+///  [--view grid|chart|plan] [--operations running|sessions|loads|cluster|configuration|…]
+///  [--load-type STREAM_LOAD] [--load-database db] [--load-search text] [--load-history]
+///  [--config-scope variables|frontend|backend] [--config-search text] [--profile name]`
 @MainActor
 enum LaunchArguments {
     private static var consumed = false
@@ -201,7 +203,17 @@ enum LaunchArguments {
                 }
                 if let raw = value("--operations"),
                    let section = OperationsModel.Section.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "").hasPrefix(raw.lowercased()) }) {
-                    workspace.openOperations(section: section)
+                    if section == .loads, value("--load-type") != nil || value("--load-database") != nil {
+                        workspace.openLoads(database: value("--load-database"), type: value("--load-type"))
+                    } else {
+                        workspace.openOperations(section: section)
+                    }
+                    if let model = workspace.selectedOperations {
+                        if let keyword = value("--load-search") { model.loadFilter.keyword = keyword }
+                        if arguments.contains("--load-history") { model.includeLoadHistory = true }
+                        if let raw = value("--config-scope"), let scope = ConfigItem.Scope(rawValue: raw) { model.configurationScope = scope }
+                        if let search = value("--config-search") { model.configurationSearch = search }
+                    }
                 }
             }
         }
@@ -313,9 +325,13 @@ struct AppCommands: Commands {
                 .disabled(session?.workspace == nil)
             Button("Sessions") { session?.workspace?.openOperations(section: .sessions) }
                 .disabled(session?.workspace == nil)
-            Button("Loads") { session?.workspace?.openOperations(section: .loads) }
+            Button("Loads") { session?.workspace?.openLoads() }
+                .disabled(session?.workspace == nil)
+            Button("Stream Loads") { session?.workspace?.openLoads(type: "STREAM_LOAD") }
                 .disabled(session?.workspace == nil)
             Button("Cluster Nodes") { session?.workspace?.openOperations(section: .cluster) }
+                .disabled(session?.workspace == nil)
+            Button("Configuration") { session?.workspace?.openOperations(section: .configuration) }
                 .disabled(session?.workspace == nil)
             Divider()
             Button("Close Tab") { session?.workspace?.closeSelectedTab() }

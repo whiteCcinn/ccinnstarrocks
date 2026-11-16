@@ -114,7 +114,7 @@ private struct DatabaseRow: View {
                 Button("New Query") { workspace.openSQL(database: database, catalog: workspace.selectedCatalog) }
                 Button("Refresh") { workspace.loadObjects(database: database, force: true) }
                 Divider()
-                Button("Loads") { workspace.openOperations(section: .loads) }
+                Button("Loads") { workspace.openLoads(database: database) }
                 Button("Schema Changes") { workspace.openOperations(section: .schemaChanges) }
                 Divider()
                 Button("Copy Name") { Pasteboard.copy(database) }

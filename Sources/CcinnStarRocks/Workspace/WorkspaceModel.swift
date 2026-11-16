@@ -270,6 +270,11 @@ final class WorkspaceModel {
 
     var selectedTab: WorkspaceTab? { tabs.first { $0.id == selectedTabID } }
 
+    var selectedOperations: OperationsModel? {
+        if case let .operations(model)? = selectedTab?.kind { return model }
+        return nil
+    }
+
     func openObject(_ object: DatabaseObject, section: ObjectDetailModel.Section? = nil) {
         if let existing = tabs.first(where: { if case let .object(model) = $0.kind { model.object.id == object.id } else { false } }) {
             selectedTabID = existing.id
@@ -296,12 +301,34 @@ final class WorkspaceModel {
     }
 
     func openOperations(section: OperationsModel.Section = .running) {
-        if let existing = tabs.first(where: { if case .operations = $0.kind { true } else { false } }) {
-            selectedTabID = existing.id
-            if case let .operations(model) = existing.kind { model.section = section }
+        if let model = selectOperationsTab() {
+            model.section = section
             return
         }
-        let model = OperationsModel(workspace: self, section: section)
+        addOperationsTab(OperationsModel(workspace: self, section: section))
+    }
+
+    /// Loads of one database and/or type (`STREAM_LOAD`, …); other filters are reset.
+    func openLoads(database: String? = nil, type: String? = nil) {
+        if let model = selectOperationsTab() {
+            model.show(.loads, database: database, loadType: type, setsLoadScope: true)
+            return
+        }
+        addOperationsTab(OperationsModel(workspace: self, section: .loads, database: database, loadFilter: LoadFilter(type: type)))
+    }
+
+    /// Selects the existing Operations tab (one per window) and returns its model.
+    private func selectOperationsTab() -> OperationsModel? {
+        for tab in tabs {
+            if case let .operations(model) = tab.kind {
+                selectedTabID = tab.id
+                return model
+            }
+        }
+        return nil
+    }
+
+    private func addOperationsTab(_ model: OperationsModel) {
         let tab = WorkspaceTab(kind: .operations(model))
         tabs.append(tab)
         selectedTabID = tab.id

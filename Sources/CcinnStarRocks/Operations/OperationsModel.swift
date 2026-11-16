@@ -16,6 +16,7 @@ final class OperationsModel {
         case taskRuns = "Task Runs"
         case schemaChanges = "Schema Changes"
         case cluster = "Cluster"
+        case configuration = "Configuration"
 
         var id: String { rawValue }
 
@@ -28,20 +29,31 @@ final class OperationsModel {
             case .taskRuns: "checklist"
             case .schemaChanges: "hammer"
             case .cluster: "server.rack"
+            case .configuration: "slider.horizontal.3"
             }
         }
     }
 
     unowned let workspace: WorkspaceModel
-    var section: Section { didSet { if section != oldValue { refresh() } } }
-    /// Database filter for loads, routine loads, task runs and schema changes (`nil` = all).
-    var database: String? { didSet { if database != oldValue { refresh() } } }
+    var section: Section { didSet { if section != oldValue { refreshUnlessBatching() } } }
+    /// Database filter for loads, routine loads, task runs and schema changes (`nil` = all; for loads, all user databases).
+    var database: String? { didSet { if database != oldValue { refreshUnlessBatching() } } }
     var autoRefresh = true { didSet { autoRefresh ? startAutoRefresh() : stopAutoRefresh() } }
     var lastRefreshed: Date?
+    private(set) var isRefreshing = false
+
+    /// Keyword, field, type and state of the Loads list; `database` above completes it.
+    var loadFilter = LoadFilter() { didSet { loadFilterChanged(from: oldValue) } }
+    /// Also search `_statistics_.loads_history` (not auto-refreshed: the table can be large).
+    var includeLoadHistory = false { didSet { if includeLoadHistory != oldValue { refreshUnlessBatching() } } }
+    var configurationScope: ConfigItem.Scope = .variables { didSet { if configurationScope != oldValue { refreshUnlessBatching() } } }
+    var configurationSearch = ""
+    var configurationModifiedOnly = false
 
     var activity: Loadable<ActivitySnapshot> = .idle
     var sessions: Loadable<[SessionProcess]> = .idle
-    var loads: Loadable<[LoadJob]> = .idle
+    var loads: Loadable<LoadSearchResult> = .idle
+    var configuration: [ConfigItem.Scope: Loadable<[ConfigItem]>] = [:]
     var routineLoads: Loadable<[RoutineLoadJob]> = .idle
     var taskRuns: Loadable<[TaskRun]> = .idle
     var alterJobs: Loadable<[AlterJob]> = .idle
@@ -58,15 +70,64 @@ final class OperationsModel {
 
     private var refreshTask: Task<Void, Never>?
     private var loopTask: Task<Void, Never>?
+    private var keywordDebounce: Task<Void, Never>?
+    private var isBatching = false
 
-    init(workspace: WorkspaceModel, section: Section) {
+    init(workspace: WorkspaceModel, section: Section, database: String? = nil, loadFilter: LoadFilter = LoadFilter()) {
         self.workspace = workspace
+        // `section` is the last property without a default: assigned after it, the others would already go through
+        // their observers and refresh several times.
+        self.database = database
+        self.loadFilter = loadFilter
         self.section = section
         refresh()
         startAutoRefresh()
     }
 
     var client: StarRocksClient { workspace.client }
+
+    /// The Loads filter as sent to the server (the shared database picker included).
+    var effectiveLoadFilter: LoadFilter {
+        var filter = loadFilter
+        filter.database = database
+        return filter
+    }
+
+    /// Switches section and, for Loads, the database and type in one step, so only one refresh is sent
+    /// (a superseded refresh would be cancelled mid-query and cost a `KILL QUERY`).
+    func show(_ section: Section, database: String? = nil, loadType: String? = nil, setsLoadScope: Bool = false) {
+        isBatching = true
+        self.section = section
+        if setsLoadScope {
+            self.database = database
+            loadFilter = LoadFilter(field: loadFilter.field, type: loadType)
+        }
+        isBatching = false
+        refresh()
+    }
+
+    private func refreshUnlessBatching() {
+        if !isBatching { refresh() }
+    }
+
+    /// Typing refreshes after a pause (the view filters the rows it has meanwhile); pickers refresh at once. Changes
+    /// that leave the query as it was (the field scope of an empty search) send nothing.
+    private func loadFilterChanged(from old: LoadFilter) {
+        guard loadFilter != old, !isBatching, section == .loads else { return }
+        var previous = old
+        previous.database = database
+        guard effectiveLoadFilter.sql(from: "information_schema.loads") != previous.sql(from: "information_schema.loads") else { return }
+        keywordDebounce?.cancel()
+        guard loadFilter.normalizedKeyword != old.normalizedKeyword else {
+            refresh()
+            return
+        }
+        keywordDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
+    }
 
     private var userDatabases: [String] {
         if let database { return [database] }
@@ -75,13 +136,12 @@ final class OperationsModel {
 
     // MARK: Refresh
 
-    private var isRefreshing = false
-
     /// `fromTimer` refreshes are skipped while one is still running, so slow clusters are never
     /// interrupted half-way (which would leave the view loading forever).
     func refresh(fromTimer: Bool = false) {
-        if fromTimer, isRefreshing { return }
+        if fromTimer, isRefreshing || !refreshesOnTimer { return }
         refreshTask?.cancel()
+        keywordDebounce?.cancel()
         let section = section
         isRefreshing = true
         refreshTask = Task {
@@ -95,8 +155,8 @@ final class OperationsModel {
             case .sessions:
                 await load({ self.sessions = $0 }, keep: sessions.value) { try await self.client.processList() }
             case .loads:
-                let database = database
-                await load({ self.loads = $0 }, keep: loads.value) { try await self.client.loads(database: database, limit: 500) }
+                let (filter, includeHistory) = (effectiveLoadFilter, includeLoadHistory)
+                await load({ self.loads = $0 }, keep: loads.value) { try await self.client.searchLoads(filter, includeHistory: includeHistory) }
             case .routineLoads:
                 let database = database
                 await load({ self.routineLoads = $0 }, keep: routineLoads.value) { try await self.client.routineLoads(database: database) }
@@ -112,6 +172,15 @@ final class OperationsModel {
                 }
             case .cluster:
                 await load({ self.nodes = $0 }, keep: nodes.value) { try await self.client.nodes() }
+            case .configuration:
+                let scope = configurationScope
+                await load({ self.configuration[scope] = $0 }, keep: configuration[scope]?.value) {
+                    switch scope {
+                    case .variables: try await self.client.variables()
+                    case .frontend: try await self.client.frontendConfig()
+                    case .backend: try await self.client.backendConfig()
+                    }
+                }
             }
             if !Task.isCancelled { lastRefreshed = Date() }
         }
@@ -127,6 +196,15 @@ final class OperationsModel {
         } catch {
             guard !Task.isCancelled else { return }
             assign(.failed(describe(error)))
+        }
+    }
+
+    /// Settings rarely change and history scans a table, so neither is polled.
+    var refreshesOnTimer: Bool {
+        switch section {
+        case .configuration: false
+        case .loads: !includeLoadHistory
+        default: true
         }
     }
 
@@ -150,6 +228,7 @@ final class OperationsModel {
     func close() {
         stopAutoRefresh()
         refreshTask?.cancel()
+        keywordDebounce?.cancel()
     }
 
     // MARK: Actions
@@ -169,7 +248,7 @@ final class OperationsModel {
     }
 
     func confirmCancelLoad(_ job: LoadJob) {
-        guard let database = job.database else { return }
+        guard job.canCancel, let database = job.database else { return }
         pendingAction = PendingAction(title: "Cancel load \(job.label)?", message: "The load job is aborted and its data is not committed.",
                                       confirmLabel: "Cancel Load") { [client] in
             try await client.cancelLoad(database: database, label: job.label)
@@ -194,6 +273,12 @@ final class OperationsModel {
                                       message: "The job is rolled back; the table keeps its current schema.", confirmLabel: "Cancel Job") { [client] in
             try await client.cancelAlterJob(job)
         }
+    }
+
+    /// Opens a pre-filled statement that changes `item` in a new query tab; it is never run here.
+    func editInSQLEditor(_ item: ConfigItem) {
+        guard let statement = ConfigStatement.edit(for: item) else { return }
+        workspace.openSQL(text: statement)
     }
 
     func runPendingAction() {

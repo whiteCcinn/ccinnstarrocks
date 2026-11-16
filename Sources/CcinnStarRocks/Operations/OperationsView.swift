@@ -18,6 +18,7 @@ struct OperationsView: View {
                 case .taskRuns: LoadableView(state: model.taskRuns, retry: { model.refresh() }) { TaskRunTable(runs: $0, showsTaskName: true).padding(12) }
                 case .schemaChanges: SchemaChangesView(model: model)
                 case .cluster: ClusterView(model: model)
+                case .configuration: ConfigurationView(model: model)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,15 +44,19 @@ struct OperationsView: View {
                 Spacer()
                 if [.loads, .routineLoads, .taskRuns, .schemaChanges].contains(model.section) {
                     Picker("Database", selection: $model.database) {
-                        Text("All databases").tag(String?.none)
+                        // Loads hide the internal _statistics_ jobs unless that database is chosen.
+                        Text(model.section == .loads ? "All user databases" : "All databases").tag(String?.none)
                         ForEach(model.workspace.databases, id: \.self) { Text($0).tag(String?.some($0)) }
                     }
                     .frame(maxWidth: 220)
                 }
-                Toggle("Auto-refresh", isOn: $model.autoRefresh)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help("Refresh every 5 seconds")
+                if model.section != .configuration {
+                    Toggle("Auto-refresh", isOn: $model.autoRefresh)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .disabled(!model.refreshesOnTimer)
+                        .help(model.refreshesOnTimer ? "Refresh every 5 seconds" : "Paused while load history is included")
+                }
                 Button {
                     model.refresh()
                 } label: {
@@ -62,26 +67,42 @@ struct OperationsView: View {
                     Text(refreshed, style: .time).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            HStack(spacing: 2) {
-                ForEach(OperationsModel.Section.allCases) { section in
-                    let selected = model.section == section
-                    Button {
-                        model.section = section
-                    } label: {
-                        Label(section.rawValue, systemImage: section.icon)
-                            .font(.callout.weight(selected ? .semibold : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .foregroundStyle(selected ? Theme.accent : .secondary)
-                            .background(selected ? Theme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+            // Eight labelled sections need ~900 pt; narrower windows fall back to icons with tooltips.
+            ViewThatFits(in: .horizontal) {
+                sectionStrip(showsTitles: true)
+                sectionStrip(showsTitles: false)
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
+    }
+
+    private func sectionStrip(showsTitles: Bool) -> some View {
+        HStack(spacing: 2) {
+            ForEach(OperationsModel.Section.allCases) { section in
+                let selected = model.section == section
+                Button {
+                    model.section = section
+                } label: {
+                    Group {
+                        if showsTitles {
+                            Label(section.rawValue, systemImage: section.icon)
+                        } else {
+                            Image(systemName: section.icon)
+                        }
+                    }
+                    .font(.callout.weight(selected ? .semibold : .regular))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .foregroundStyle(selected ? Theme.accent : .secondary)
+                    .background(selected ? Theme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(section.rawValue)
+            }
+        }
+        .fixedSize()
     }
 }
 
@@ -130,9 +151,9 @@ private struct RunningNowView: View {
                     if !snapshot.loads.isEmpty {
                         Card(title: "Loads in progress", systemImage: "tray.and.arrow.down") {
                             ForEach(snapshot.loads) { job in
-                                ActiveRow(title: job.label, detail: "\(job.type ?? "LOAD") → \(job.database ?? "?").\(job.table ?? "?")",
+                                ActiveRow(title: job.label, detail: "\(LoadJob.displayName(forType: job.type).nonEmpty ?? "Load") → \(job.database ?? "?").\(job.table ?? "?")",
                                           trailing: job.progress ?? "", state: job.state) {
-                                    Button("Cancel") { model.confirmCancelLoad(job) }
+                                    if job.canCancel { Button("Cancel") { model.confirmCancelLoad(job) } }
                                 }
                             }
                         }
@@ -234,56 +255,6 @@ private struct SessionsView: View {
                         Button("Copy Statement") { Pasteboard.copy(process.statement ?? "") }
                             .disabled(process.statement == nil)
                     }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Loads
-
-private struct LoadsView: View {
-    let model: OperationsModel
-    @State private var selection: LoadJob.ID?
-
-    var body: some View {
-        LoadableView(state: model.loads, retry: { model.refresh() }) { jobs in
-            VSplitView {
-                Table(jobs, selection: $selection) {
-                    TableColumn("State") { StateBadge(state: $0.state) }.width(90)
-                    TableColumn("Label") { Text($0.label).font(Theme.monospacedSmall).lineLimit(1) }.width(min: 120, ideal: 220)
-                    TableColumn("Type") { Text($0.type ?? "") }.width(70)
-                    TableColumn("Target") { Text("\($0.database ?? "").\($0.table ?? "")") }.width(min: 100, ideal: 160)
-                    TableColumn("Progress") { Text($0.progress ?? "").foregroundStyle(.secondary) }.width(min: 80, ideal: 130)
-                    TableColumn("Rows") { Text(Format.count($0.sinkRows)).monospacedDigit() }.width(80)
-                    TableColumn("Filtered") { job in
-                        Text(Format.count(job.filteredRows)).monospacedDigit().foregroundStyle((job.filteredRows ?? 0) > 0 ? .orange : .secondary)
-                    }
-                    .width(64)
-                    TableColumn("Created") { Text($0.createTime ?? "").monospacedDigit() }.width(min: 130, ideal: 150)
-                    TableColumn("Finished") { Text($0.finishTime ?? "").monospacedDigit().foregroundStyle(.secondary) }.width(min: 130, ideal: 150)
-                }
-                .contextMenu(forSelectionType: LoadJob.ID.self) { ids in
-                    if let id = ids.first, let job = jobs.first(where: { $0.id == id }) {
-                        Button("Cancel Load") { model.confirmCancelLoad(job) }.disabled(!job.isActive)
-                        Button("Copy Label") { Pasteboard.copy(job.label) }
-                        if let sql = job.trackingSQL { Button("Open Error Tracking Query") { model.workspace.openSQL(text: sql, run: true) } }
-                    }
-                }
-                .frame(minHeight: 200)
-                if let job = jobs.first(where: { $0.id == selection }) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if let error = job.errorMessage { ErrorBanner(message: error) }
-                            KeyValueList(items: [("Job ID", job.jobID), ("Label", job.label), ("User", job.user ?? "—"), ("Priority", job.priority ?? "—"),
-                                                 ("Scanned rows", Format.count(job.scanRows)), ("Loaded rows", Format.count(job.sinkRows)),
-                                                 ("Filtered rows", Format.count(job.filteredRows)), ("Started", job.startTime ?? "—"),
-                                                 ("Warehouse", job.warehouse ?? "—")], monospacedValues: true)
-                        }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(minHeight: 120)
                 }
             }
         }
