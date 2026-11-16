@@ -173,6 +173,23 @@ struct ReadOnlySQLGuardTests {
     }
 }
 
+@Suite("MCP execute_statement")
+struct MCPExecuteStatementTests {
+    @Test(arguments: ["SET GLOBAL query_timeout = 600", "ADMIN SET FRONTEND CONFIG ('label_keep_max_num' = '1')",
+                      "UPDATE information_schema.be_configs SET VALUE = '1' WHERE NAME = 'x'"])
+    func refusesClusterSettingChanges(sql: String) {
+        #expect { _ = try StarRocksMCPTools.executableStatement(sql) } throws: { error in
+            (error as? MCPToolError)?.message.contains("SQL editor") == true
+        }
+    }
+
+    @Test func allowsOrdinaryWritesAndRejectsBatches() throws {
+        #expect(try StarRocksMCPTools.executableStatement("INSERT INTO t VALUES (1);") == "INSERT INTO t VALUES (1)")
+        #expect(try StarRocksMCPTools.executableStatement("SET query_timeout = 600") == "SET query_timeout = 600")
+        #expect(throws: MCPToolError.self) { try StarRocksMCPTools.executableStatement("SELECT 1; SELECT 2") }
+    }
+}
+
 // MARK: - Profiles and results
 
 @Suite("MCP profiles and results")

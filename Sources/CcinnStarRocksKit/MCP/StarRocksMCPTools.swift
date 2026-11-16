@@ -118,7 +118,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
         ]
         if resolver.anyWritable {
             tools.append(MCPTool(name: "execute_statement", title: "Execute SQL (writes allowed)",
-                                 description: "Runs one SQL statement that may change data or schema (INSERT, UPDATE, DELETE, CREATE, ALTER, REFRESH MATERIALIZED VIEW, …). Only available on connections with read-write AI access. Prefer run_query for reads.",
+                                 description: "Runs one SQL statement that may change data or schema (INSERT, UPDATE, DELETE, CREATE, ALTER, REFRESH MATERIALIZED VIEW, …). Only available on connections with read-write AI access. Cluster settings (SET GLOBAL, ADMIN SET … CONFIG, UPDATE information_schema.be_configs) cannot be changed here. Prefer run_query for reads.",
                                  inputSchema: Self.schema(["sql": ["type": "string", "description": "A single SQL statement."],
                                                            "database": ["type": "string", "description": "Database to run in."], "catalog": Self.catalogProperty,
                                                            "timeout_seconds": ["type": "number", "minimum": 1, "maximum": .int(Int64(Self.maxTimeout))]],
@@ -419,12 +419,21 @@ public struct StarRocksMCPTools: MCPToolProvider {
         return ["statement": .string(body), "plan": .string(plan)]
     }
 
-    private func execute(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
-        let sql = try args.required("sql")
+    /// The one statement `execute_statement` may run. Cluster setting changes are refused: the SQL editor asks the
+    /// user to confirm them, and an MCP call cannot be confirmed.
+    static func executableStatement(_ sql: String) throws -> String {
         let statements = SQLStatementSplitter.split(sql)
         guard statements.count == 1, let statement = statements.first?.text else {
             throw MCPToolError("Pass exactly one statement per call.")
         }
+        if let change = ClusterSettingChange.of(statement) {
+            throw MCPToolError("Changing \(change.displayName) is not allowed over MCP. Cluster settings can only be changed in the CcinnStarRocks SQL editor, where every change must be confirmed by the user.")
+        }
+        return statement
+    }
+
+    private func execute(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
+        let statement = try Self.executableStatement(try args.required("sql"))
         context.statement = statement
         let results = try await runInSession(client, sql: statement, args: args, limits: RowLimits(maxRows: Self.maxRowLimit, drainRows: 10_000))
         var payload = Self.encode(results: results, limitRows: Self.maxRowLimit)
