@@ -13,7 +13,13 @@ public actor SQLSession {
     /// Increases with every statement, so a late cancel never touches a newer run on the same connection.
     private var runGeneration: UInt64 = 0
     private var cancelledGeneration: UInt64?
-    private var isBusy = false
+    /// A run is in progress (connecting or executing).
+    public private(set) var isBusy = false
+    /// Stop was pressed while the current run had not reached the server yet (still connecting). The run then
+    /// stops before sending its statement instead of ignoring the request.
+    private var cancelRequestedBeforeStart = false
+    /// The current run's statement has reached the server (Stop then kills or closes it instead of preventing it).
+    public var isStatementRunning: Bool { runningConnectionID != nil }
     /// Session-level `SET` statements replayed after a reconnect (bounded).
     private var sessionSettings: [String] = []
     private static let maxSessionSettings = 64
@@ -29,8 +35,11 @@ public actor SQLSession {
         // One statement at a time; a rejected second run must not touch the running one's state.
         guard !isBusy else { throw StarRocksError(.busy, "This editor is already running a statement") }
         isBusy = true
+        cancelRequestedBeforeStart = false
         defer { isBusy = false }
         let connection = try await ensureConnection()
+        // No suspension between this check and `runningConnectionID`: a cancel sees either the flag or the statement.
+        if cancelRequestedBeforeStart { throw StarRocksError.cancelled() }
         runGeneration &+= 1
         let generation = runGeneration
         runningConnectionID = connection.connectionID
@@ -59,7 +68,12 @@ public actor SQLSession {
     /// Asks the server to stop the running statement (`KILL QUERY`). If that statement is still
     /// running after `graceSeconds`, its socket is closed.
     public func cancel(graceSeconds: Double = 5) async {
-        guard let id = runningConnectionID, let connection else { return }
+        guard isBusy else { return }
+        guard let id = runningConnectionID, let connection else {
+            // The statement has not reached the server yet: stop it before it is sent.
+            cancelRequestedBeforeStart = true
+            return
+        }
         let generation = runGeneration
         cancelledGeneration = generation
         do {

@@ -14,8 +14,11 @@ final class FakeCluster: Sendable {
 
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
     private let reply: @Sendable (String) -> FakeMySQLServer.Reply
+    /// Seconds to wait before connection N (0-based, in creation order) is handed out.
+    private let connectDelays: [Int: Double]
 
-    init(reply: @escaping @Sendable (String) -> FakeMySQLServer.Reply) {
+    init(connectDelays: [Int: Double] = [:], reply: @escaping @Sendable (String) -> FakeMySQLServer.Reply) {
+        self.connectDelays = connectDelays
         self.reply = reply
     }
 
@@ -33,6 +36,7 @@ final class FakeCluster: Sendable {
                 state.nextID += 1
                 return state.nextID
             }
+            if let delay = connectDelays[Int(id) - 101] { try await Task.sleep(for: .milliseconds(Int(delay * 1000))) }
             let server = FakeMySQLServer(connectionID: id) { [self] sql in
                 if sql.hasPrefix("KILL QUERY "), let target = UInt32(sql.dropFirst(11)) {
                     state.withLockUnchecked { $0.servers[target] }?.interrupt()
@@ -88,6 +92,16 @@ private final class HandshakeRecorder: ByteTransport, @unchecked Sendable {
     }
 }
 
+/// Waits (up to 5 s) until `condition` holds. Used instead of a fixed sleep before cancelling: on a slow CI
+/// runner a run may still be connecting after 100 ms, and Stop then prevents the statement instead.
+func waitUntil(_ what: String, _ condition: @Sendable () async -> Bool) async throws {
+    for _ in 0..<500 {
+        if await condition() { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw StarRocksError(.timeout, "Timed out waiting until \(what)")
+}
+
 @Suite("Session and cancellation regressions")
 struct SessionRegressionTests {
     private func connect(_ cluster: FakeCluster, database: String? = nil, poolSize: Int = 1) async throws -> StarRocksClient {
@@ -110,6 +124,26 @@ struct SessionRegressionTests {
         await client.close()
     }
 
+    /// Stop pressed while the editor is still connecting used to be ignored (no running statement yet), so
+    /// the statement ran anyway.
+    @Test func cancelWhileConnectingStopsTheRunBeforeItIsSent() async throws {
+        // Connection 1 is the session's own connection: its connect takes 1 s.
+        let cluster = FakeCluster(connectDelays: [1: 1.0]) { sql in sql.contains("long") ? .hang : .packets(FakeCluster.rows("ok")) }
+        let client = try await connect(cluster)
+        let session = client.openSession()
+        let long = Task { try await session.run("SELECT 'long'") }
+        try await waitUntil("the run is connecting") { await session.isBusy }
+        #expect(await !session.isStatementRunning)
+        await session.cancel(graceSeconds: 0.2)
+        await #expect { _ = try await long.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
+        #expect(!cluster.statements.contains { $0.contains("long") }, "the cancelled statement never reached the server")
+        #expect(!cluster.statements.contains { $0.hasPrefix("KILL") })
+        // The request applied to that run only: the next statement runs normally.
+        #expect(try await session.run("SELECT 'next'").last?.scalar == "ok")
+        await session.close()
+        await client.close()
+    }
+
     @Test func lateCancelDoesNotCloseTheNextRun() async throws {
         let cluster = FakeCluster { sql in
             if sql.contains("first") { return .hang }
@@ -119,7 +153,7 @@ struct SessionRegressionTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let first = Task { try await session.run("SELECT 'first'") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("the statement runs") { await session.isStatementRunning }
         let cancel = Task { await session.cancel(graceSeconds: 0.3) }
         await #expect { _ = try await first.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
         // Re-run immediately on the same connection; the pending cancel's grace period expires meanwhile.
@@ -156,7 +190,7 @@ struct SessionRegressionTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("the statement runs") { await session.isStatementRunning }
         await #expect { _ = try await session.run("SELECT 2") } throws: { ($0 as? StarRocksError)?.kind == .busy }
         #expect(await session.runningConnectionID != nil, "the rejected run must not clear the running statement")
         await session.cancel(graceSeconds: 1)
