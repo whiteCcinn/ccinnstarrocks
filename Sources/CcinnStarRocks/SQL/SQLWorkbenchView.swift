@@ -24,13 +24,13 @@ struct SQLWorkbenchView: View {
             }
         }
         .sheet(item: $model.inspected) { ValueInspectorView(value: $0) }
-        .confirmationDialog("Run statements that change data or schema?",
+        .confirmationDialog(model.pendingConfirmation?.request.title ?? "",
                             isPresented: Binding(get: { model.pendingConfirmation != nil }, set: { if !$0 { model.resolveConfirmation(false) } }),
                             titleVisibility: .visible) {
-            Button("Run", role: .destructive) { model.resolveConfirmation(true) }
+            Button(model.pendingConfirmation?.request.confirmLabel ?? "Run", role: .destructive) { model.resolveConfirmation(true) }
             Button("Cancel", role: .cancel) { model.resolveConfirmation(false) }
         } message: {
-            Text((model.pendingConfirmation?.statements ?? []).prefix(5).map { String($0.prefix(160)) }.joined(separator: "\n\n"))
+            Text(model.pendingConfirmation?.request.message ?? "")
         }
     }
 }

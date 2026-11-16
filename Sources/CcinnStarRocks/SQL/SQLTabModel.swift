@@ -141,7 +141,7 @@ final class SQLTabModel {
 
     struct PendingConfirmation: Identifiable {
         let id = UUID()
-        let statements: [String]
+        let request: RunConfirmation
         let continuation: CheckedContinuation<Bool, Never>
     }
 
@@ -315,10 +315,10 @@ final class SQLTabModel {
                 runStartedAt = nil
                 runAnchors = []
             }
-            let mutations = statements.map(\.sql).filter { SQLStatementKind.of($0).isMutation }
-            if workspace.profile.confirmMutations, !mutations.isEmpty {
+            // Cluster setting changes are always confirmed; other changes when the connection asks for it.
+            if let request = RunConfirmation.required(for: statements.map(\.sql), confirmMutations: workspace.profile.confirmMutations) {
                 let confirmed = await withCheckedContinuation { continuation in
-                    pendingConfirmation = PendingConfirmation(statements: mutations, continuation: continuation)
+                    pendingConfirmation = PendingConfirmation(request: request, continuation: continuation)
                 }
                 guard confirmed else { return }
             }
