@@ -142,6 +142,10 @@ public struct SQLLexer: Sendable {
     }
 
     private func endOfQuoted(from index: Int, quote: UInt16, backslashEscapes: Bool) -> Int {
+        scanQuoted(from: index, quote: quote, backslashEscapes: backslashEscapes).end
+    }
+
+    private func scanQuoted(from index: Int, quote: UInt16, backslashEscapes: Bool) -> (end: Int, closed: Bool) {
         var index = index + 1
         while index < units.count {
             let unit = units[index]
@@ -154,11 +158,28 @@ public struct SQLLexer: Sendable {
                     index += 2
                     continue
                 }
-                return index + 1
+                return (index + 1, true)
             }
             index += 1
         }
-        return units.count
+        return (units.count, false)
+    }
+
+    /// A string, back-quoted identifier or `/* */` comment that runs to the end of the input without
+    /// its closing delimiter. Only the last token can be unterminated, so this rescans at most once.
+    public func isUnterminated(_ token: SQLToken) -> Bool {
+        let start = token.range.lowerBound
+        guard token.range.upperBound >= units.count, start >= 0, start < units.count else { return false }
+        switch token.kind {
+        case .string, .quotedIdentifier:
+            return !scanQuoted(from: start, quote: units[start], backslashEscapes: token.kind == .string).closed
+        case .comment:
+            guard units[start] == 0x2F else { return false } // `--` and `#` comments end at the line end
+            let end = token.range.upperBound
+            return token.range.count < 4 || !(units[end - 2] == 0x2A && units[end - 1] == 0x2F)
+        default:
+            return false
+        }
     }
 
     private func endOfNumber(from index: Int) -> Int {

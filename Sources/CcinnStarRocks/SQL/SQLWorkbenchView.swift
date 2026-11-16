@@ -10,11 +10,15 @@ struct SQLWorkbenchView: View {
             WorkbenchToolbar(model: model)
             Divider()
             VSplitView {
-                SQLEditor(text: $model.text, selection: $model.selection, errorOffset: model.errorOffset,
-                          completionProvider: { [model] text, cursor in await model.completions(text: text, cursor: cursor) },
-                          focusOnAppear: true)
-                    .frame(minHeight: 110, idealHeight: 260)
-                    .background(Color(nsColor: .textBackgroundColor))
+                VStack(spacing: 0) {
+                    SQLEditor(text: $model.text, selection: $model.selection, diagnostics: model.diagnostics,
+                              completionProvider: { [model] text, cursor in await model.completions(text: text, cursor: cursor) },
+                              onEdit: { [model] edits in model.editorDidEdit(edits) },
+                              focusOnAppear: true)
+                    DiagnosticsBar(model: model)
+                }
+                .frame(minHeight: 110, idealHeight: 260)
+                .background(Color(nsColor: .textBackgroundColor))
                 ResultPanel(model: model)
                     .frame(minHeight: 150, idealHeight: 380)
             }
@@ -152,6 +156,131 @@ private struct DatabaseMenu: View {
         }
         .fixedSize()
         .help("Current database of this editor (USE)")
+    }
+}
+
+// MARK: - Diagnostics
+
+/// A status line under the editor, always present so the editor never resizes: the diagnostic at the
+/// cursor (position, message, navigation) and the cursor's own line and column.
+private struct DiagnosticsBar: View {
+    let model: SQLTabModel
+    /// The diagnostic last navigated to; disambiguates diagnostics that start at the same offset.
+    @State private var preferred: SQLDiagnostic?
+
+    var body: some View {
+        let diagnostics = model.diagnostics
+        let cursor = model.selection.location
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if let index = SQLDiagnosticNavigator.currentIndex(in: diagnostics, cursor: cursor, preferred: preferred) {
+                    problem(diagnostics, index)
+                }
+                Spacer(minLength: 8)
+                let position = model.position(of: cursor)
+                Text("Ln \(position.line), Col \(position.column)")
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(.bar)
+        }
+    }
+
+    @ViewBuilder
+    private func problem(_ diagnostics: [SQLDiagnostic], _ index: Int) -> some View {
+        let diagnostic = diagnostics[index]
+        let position = model.position(of: diagnostic.range.lowerBound)
+        Image(systemName: diagnostic.severity == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+            .foregroundStyle(diagnostic.severity == .error ? Color.red : Color.orange)
+        Text("Line \(position.line), column \(position.column)")
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        Text(diagnostic.message)
+            .truncationMode(.tail)
+            .help(diagnostic.message)
+        Text(diagnostic.source == .server ? "StarRocks" : "Syntax check")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .help(diagnostic.source == .server ? "Reported by StarRocks when the statement ran"
+                                               : "Found while typing; nothing was sent to the server")
+        if diagnostics.count > 1 {
+            Text("\(index + 1) of \(diagnostics.count)").monospacedDigit().foregroundStyle(.secondary)
+            Button {
+                go(to: diagnostics[(index + diagnostics.count - 1) % diagnostics.count])
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .help("Previous problem")
+            Button {
+                go(to: diagnostics[(index + 1) % diagnostics.count])
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .help("Next problem")
+        } else {
+            Button("Show") { go(to: diagnostic) }
+                .help("Select the marked text in the editor")
+        }
+    }
+
+    private func go(to diagnostic: SQLDiagnostic) {
+        preferred = diagnostic
+        model.reveal(diagnostic)
+    }
+}
+
+/// A failed statement: error kind and editor position, the message without StarRocks' framing, the
+/// raw message, and Show in Editor while the marker is valid. Long messages are shortened for display
+/// (Copy copies them whole).
+private struct StatementErrorView: View {
+    let message: String
+    let outcome: StatementOutcome
+    let model: SQLTabModel
+
+    private static let rawMessageLimit = 2_000
+
+    var body: some View {
+        let parsed = outcome.serverError ?? SQLServerError(phase: .other, detail: message)
+        let marker = model.serverDiagnostic(for: outcome)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                // Only an editor position: the server's is relative to the executed statement.
+                Text(parsed.title(at: marker.map { model.position(of: $0.range.lowerBound) })).font(.headline)
+                Spacer()
+                if let marker {
+                    Button("Show in Editor") { model.reveal(marker) }
+                        .help("Select the text this error is about")
+                }
+                Button {
+                    Pasteboard.copy(message)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy error")
+            }
+            Text(parsed.summary)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if parsed.summary != message {
+                Text(message.count > Self.rawMessageLimit ? String(message.prefix(Self.rawMessageLimit)) + "…" : message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Metrics.smallCornerRadius))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.smallCornerRadius).strokeBorder(Color.red.opacity(0.25)))
     }
 }
 
@@ -328,7 +457,7 @@ private struct OutcomeView: View {
         } else if let error = outcome.errorMessage {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    ErrorBanner(message: error)
+                    StatementErrorView(message: error, outcome: outcome, model: model)
                     Text(outcome.executedSQL)
                         .font(Theme.monospacedSmall)
                         .foregroundStyle(.secondary)

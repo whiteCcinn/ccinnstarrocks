@@ -28,6 +28,8 @@ let package = Package(
         .testTarget(name: "StarRocksKitTests", dependencies: ["MySQLWire", "StarRocksKit"], swiftSettings: settings),
         .testTarget(name: "CcinnStarRocksKitTests", dependencies: ["StarRocksKit", "CcinnStarRocksKit"], swiftSettings: settings),
         .testTarget(name: "IntegrationTests", dependencies: ["StarRocksKit", "CcinnStarRocksKit"], swiftSettings: settings),
+        // AppKit behaviour of the app's views (editor text storage, input methods).
+        .testTarget(name: "CcinnStarRocksAppTests", dependencies: ["CcinnStarRocks", "CcinnStarRocksKit"], swiftSettings: settings),
     ],
     swiftLanguageModes: [.v6]
 )

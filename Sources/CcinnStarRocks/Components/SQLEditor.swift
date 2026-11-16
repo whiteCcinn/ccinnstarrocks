@@ -5,7 +5,8 @@ import SwiftUI
 typealias CompletionProvider = @MainActor (_ text: String, _ cursor: Int) async -> CompletionResult
 
 /// SQL editor on NSTextView: lexer-driven highlighting, line numbers, current-statement highlight,
-/// error underline, bracket/quote pairing, comment toggling and context-aware completion.
+/// diagnostics (underlines and inline messages), bracket/quote pairing, comment toggling and
+/// context-aware completion.
 struct SQLEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var selection: NSRange
@@ -13,9 +14,11 @@ struct SQLEditor: NSViewRepresentable {
     var fontSize: CGFloat = 13
     var showsLineNumbers = true
     var highlightsCurrentStatement = true
-    /// UTF-16 offset of an error to underline.
-    var errorOffset: Int?
+    /// Diagnostics of `text` (UTF-16 ranges), underlined and shown at the end of their line.
+    var diagnostics: [SQLDiagnostic] = []
     var completionProvider: CompletionProvider?
+    /// Edits made by the user, reported before `text` is updated (see `SQLTabModel.editorDidEdit`).
+    var onEdit: (@MainActor ([SQLTextEdit]) -> Void)?
     var focusOnAppear = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -68,6 +71,8 @@ struct SQLEditor: NSViewRepresentable {
 
         context.coordinator.textView = textView
         textView.string = text
+        textView.textStorage?.delegate = context.coordinator
+        context.coordinator.diagnostics = diagnostics
         context.coordinator.textChanged()
         context.coordinator.observeScrolling(of: scrollView)
         if focusOnAppear {
@@ -77,26 +82,7 @@ struct SQLEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.parent = self
-        guard let textView = coordinator.textView else { return }
-        textView.isEditable = isEditable
-        if textView.string != text {
-            coordinator.isApplyingBinding = true
-            textView.string = text
-            coordinator.isApplyingBinding = false
-            let length = (text as NSString).length
-            let clamped = NSRange(location: min(selection.location, length), length: 0)
-            textView.setSelectedRange(clamped)
-            coordinator.textChanged()
-        } else if coordinator.lastErrorOffset != errorOffset {
-            coordinator.rehighlight()
-        }
-        let current = textView.selectedRange()
-        if selection != current, NSMaxRange(selection) <= (textView.string as NSString).length, !coordinator.isTrackingSelection {
-            textView.setSelectedRange(selection)
-            textView.scrollRangeToVisible(selection)
-        }
+        context.coordinator.update(from: self)
     }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
@@ -106,13 +92,23 @@ struct SQLEditor: NSViewRepresentable {
     // MARK: Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var parent: SQLEditor
         weak var textView: SQLTextView?
         weak var ruler: LineNumberRulerView?
         var isApplyingBinding = false
         var isTrackingSelection = false
-        var lastErrorOffset: Int?
+        /// The editor's own copy, moved with every edit immediately so markers never lag behind typing;
+        /// replaced by the model's list whenever the two differ.
+        var diagnostics: [SQLDiagnostic] = [] {
+            didSet {
+                guard diagnostics != oldValue else { return }
+                textView?.inlineDiagnostics = diagnostics
+                // Lines whose message disappeared are not otherwise invalidated.
+                textView?.needsDisplay = true
+            }
+        }
+        private var pendingEdits: [SQLTextEdit] = []
         private var statements: [SQLStatement] = []
         private var highlightedStatement: NSRange?
         private var lastInserted = ""
@@ -151,8 +147,78 @@ struct SQLEditor: NSViewRepresentable {
 
         // MARK: Text changes
 
+        /// Records every character edit (typing, paste, undo, input methods, multi-range edits as their
+        /// union). `willProcessEditing` reports the exact range; after attribute fixing (`didProcessEditing`)
+        /// it is widened to the end of the paragraph, which would drop markers later on the same line.
+        nonisolated func textStorage(_ textStorage: NSTextStorage, willProcessEditing editedMask: NSTextStorageEditActions,
+                                     range editedRange: NSRange, changeInLength delta: Int) {
+            guard editedMask.contains(.editedCharacters) else { return }
+            // Described here, from the edited storage (scans only the inserted text); not describable →
+            // invalidate everything rather than guess.
+            let edit = SQLTextEdit.made(in: textStorage.mutableString, editedRange: editedRange, changeInLength: delta)
+                ?? SQLTextEdit(range: 0..<Int.max, replacementLength: 0)
+            MainActor.assumeIsolated {
+                guard !isApplyingBinding else { return }
+                pendingEdits.append(edit)
+            }
+        }
+
+        /// Brings the view in line with the binding. Skipped while the text storage is ahead of it: an
+        /// input method is composing (marked text fires `willProcessEditing` but no `textDidChange`) or
+        /// edits wait to be reported. Replacing the text then would destroy the composition, and the
+        /// binding's diagnostics describe older text.
+        func update(from editor: SQLEditor) {
+            parent = editor
+            guard let textView else { return }
+            textView.isEditable = editor.isEditable
+            if textView.hasMarkedText() { return }
+            if !pendingEdits.isEmpty {
+                // Edits without a `textDidChange` (e.g. a cancelled composition): report them now, after
+                // this view update, so the binding catches up instead of being overwritten.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.hasPendingEdits else { return }
+                    self.reportPendingEdits()
+                }
+                return
+            }
+            let text = editor.text
+            if textView.string != text {
+                isApplyingBinding = true
+                textView.string = text
+                isApplyingBinding = false
+                pendingEdits.removeAll()
+                // The model's diagnostics already describe the new text.
+                diagnostics = editor.diagnostics
+                let length = (text as NSString).length
+                textView.setSelectedRange(NSRange(location: min(editor.selection.location, length), length: 0))
+                textChanged()
+            } else if diagnostics != editor.diagnostics {
+                diagnostics = editor.diagnostics
+                diagnosticsDidChange()
+            }
+            let selection = editor.selection
+            if selection != textView.selectedRange(), NSMaxRange(selection) <= (textView.string as NSString).length, !isTrackingSelection {
+                textView.setSelectedRange(selection)
+                textView.scrollRangeToVisible(selection)
+            }
+        }
+
+        var hasPendingEdits: Bool { !pendingEdits.isEmpty }
+
         func textDidChange(_ notification: Notification) {
-            guard !isApplyingBinding, let textView else { return }
+            reportPendingEdits()
+        }
+
+        /// Moves the diagnostics, tells the model about the edits, then writes the text to the binding.
+        func reportPendingEdits() {
+            guard !isApplyingBinding, let textView, !textView.hasMarkedText() || pendingEdits.isEmpty else { return }
+            let edits = pendingEdits
+            pendingEdits.removeAll()
+            if !edits.isEmpty, !diagnostics.isEmpty {
+                diagnostics = SQLDiagnosticTracker.apply(edits, to: diagnostics)
+            }
+            // Before the text: the model adjusts its diagnostics for exactly these edits.
+            parent.onEdit?(edits)
             parent.text = textView.string
             textChanged()
             scheduleCompletion(force: false)
@@ -191,7 +257,6 @@ struct SQLEditor: NSViewRepresentable {
         func rehighlight() {
             guard let textView else { return }
             let text = textView.string
-            lastErrorOffset = parent.errorOffset
             let length = (text as NSString).length
             if length <= Self.highlightLimit {
                 let lexer = SQLLexer(text)
@@ -215,6 +280,11 @@ struct SQLEditor: NSViewRepresentable {
             highlightVisibleRange(force: true)
             highlightedStatement = nil
             updateStatementHighlight()
+        }
+
+        /// Diagnostics changed but the text did not: re-apply underlines (no re-lexing) and redraw messages.
+        func diagnosticsDidChange() {
+            highlightVisibleRange(force: true)
         }
 
         /// Colours the visible characters (plus a margin). Called after edits and when scrolling.
@@ -256,14 +326,14 @@ struct SQLEditor: NSViewRepresentable {
                 }
                 index += 1
             }
-            if let offset = parent.errorOffset, length > 0 {
-                let text = textView.string as NSString
-                let location = min(max(0, offset), length - 1)
-                let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
-                let lineEnd = min(NSMaxRange(lineRange), length)
-                let underline = NSRange(location: location, length: max(1, min(lineEnd - location, 32)))
+            for diagnostic in diagnostics {
+                // Exactly the marked text, clipped to the re-coloured window (and the text).
+                let lower = max(diagnostic.range.lowerBound, start)
+                let upper = min(diagnostic.range.upperBound, end, length)
+                guard lower < upper else { continue }
+                let color: NSColor = diagnostic.severity == .error ? .systemRed : .systemOrange
                 layoutManager.addTemporaryAttributes([.underlineStyle: NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDot.rawValue,
-                                                      .underlineColor: NSColor.systemRed], forCharacterRange: underline)
+                                                      .underlineColor: color], forCharacterRange: NSRange(location: lower, length: upper - lower))
             }
         }
 
@@ -401,9 +471,62 @@ struct SQLEditor: NSViewRepresentable {
     }
 }
 
-/// NSTextView with SQL conveniences: pairing, auto-indent, ⌘/ comment toggle, ⌃Space completion.
+/// NSTextView with SQL conveniences: pairing, auto-indent, ⌘/ comment toggle, ⌃Space completion,
+/// and diagnostic messages drawn after the end of their line.
 final class SQLTextView: NSTextView {
     weak var coordinator: SQLEditor.Coordinator?
+    var inlineDiagnostics: [SQLDiagnostic] = []
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawInlineDiagnostics(in: dirtyRect)
+    }
+
+    /// The first message of every visible line that has one, in a tinted capsule after the line's
+    /// last character, truncated; skipped when less than 80 pt remain.
+    private func drawInlineDiagnostics(in dirtyRect: NSRect) {
+        guard !inlineDiagnostics.isEmpty, let layoutManager, let textContainer else { return }
+        let text = string as NSString
+        let length = text.length
+        guard length > 0 else { return }
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        let visible = layoutManager.characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
+        let font = NSFont.systemFont(ofSize: max(9, (self.font?.pointSize ?? 13) - 2))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        var drawnLines = Set<Int>()
+        for diagnostic in inlineDiagnostics {
+            let location = diagnostic.range.lowerBound
+            guard location >= 0, location < length, NSLocationInRange(location, visible) || location == NSMaxRange(visible) else { continue }
+            let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
+            guard drawnLines.insert(lineRange.location).inserted else { continue }
+            var lineEnd = NSMaxRange(lineRange)
+            while lineEnd > lineRange.location, [0x0A, 0x0D].contains(text.character(at: lineEnd - 1)) { lineEnd -= 1 }
+            let anchor = max(lineRange.location, lineEnd - 1)
+            guard anchor < length else { continue }
+            let glyph = layoutManager.glyphIndexForCharacter(at: anchor)
+            guard glyph < layoutManager.numberOfGlyphs else { continue }
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let used = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+            let origin = textContainerOrigin
+            let x = used.maxX + origin.x + 22
+            let available = visibleRect.maxX - x - 10
+            guard available >= 80 else { continue }
+            let color: NSColor = diagnostic.severity == .error ? .systemRed : .systemOrange
+            // Bounded: messages are measured on every draw.
+            let message = String(diagnostic.message.prefix(300)).replacingOccurrences(of: "\n", with: " ")
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
+            let size = (message as NSString).size(withAttributes: attributes)
+            let width = min(ceil(size.width), available - 12)
+            let height = ceil(size.height)
+            let capsule = NSRect(x: x, y: fragment.minY + origin.y + max(0, (fragment.height - height - 2) / 2), width: width + 12, height: height + 2)
+            guard capsule.intersects(dirtyRect) else { continue }
+            color.withAlphaComponent(0.1).setFill()
+            NSBezierPath(roundedRect: capsule, xRadius: capsule.height / 2, yRadius: capsule.height / 2).fill()
+            (message as NSString).draw(with: NSRect(x: x + 6, y: capsule.minY + 1, width: width, height: height),
+                                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
+        }
+    }
 
     private static let pairs: [String: String] = ["(": ")", "'": "'", "\"": "\"", "`": "`"]
     private static let closers: Set<String> = [")", "'", "\"", "`"]

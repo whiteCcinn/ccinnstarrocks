@@ -127,6 +127,14 @@ public enum AutoLimit {
     public struct Outcome: Sendable, Equatable {
         public let sql: String
         public let applied: Bool
+        /// UTF-16 range of the inserted ` LIMIT n` in `sql` (maps server error positions back).
+        public let insertion: Range<Int>?
+
+        init(sql: String, applied: Bool, insertion: Range<Int>? = nil) {
+            self.sql = sql
+            self.applied = applied
+            self.insertion = insertion
+        }
     }
 
     public static func apply(to sql: String, limit: Int) -> Outcome {
@@ -161,6 +169,7 @@ public enum AutoLimit {
         let units = lexer.units
         let head = String(decoding: units[0..<insertAt], as: UTF16.self)
         let tail = String(decoding: units[insertAt...], as: UTF16.self)
-        return Outcome(sql: head + " LIMIT \(limit)" + tail, applied: true)
+        let clause = " LIMIT \(limit)"
+        return Outcome(sql: head + clause + tail, applied: true, insertion: insertAt..<(insertAt + clause.utf16.count))
     }
 }
