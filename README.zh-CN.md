@@ -109,6 +109,14 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
 
 每个 Release 都附带 `SHA256SUMS.txt` 校验和。
 
+### 更新
+
+选择 **CcinnStarRocks → 检查更新…（Check for Updates…）**。如果有新版本，CcinnStarRocks 会显示更新内容。**下载并打开（Download & Open）** 会把磁盘映像保存到“下载”文件夹，按该版本的 `SHA256SUMS.txt` 校验后再打开。退出 CcinnStarRocks，然后把新版本拖到 **应用程序** 文件夹即可。
+
+CcinnStarRocks 每天也会在后台自动检查一次，可以在 **设置 → 通用 → 更新** 中关闭。检查只访问 GitHub 的公开 Releases API，也可以选择 **跳过此版本（Skip This Version）**。
+
+项目主页、发布说明和问题反馈入口也在 **帮助** 菜单和“关于”窗口中。
+
 ## 快速开始
 
 1. 点击**新建连接**，填写 FE 地址与查询端口（默认 **9030**）、用户名和密码；可选填默认数据库 / Catalog，或配置 SSH 隧道。
