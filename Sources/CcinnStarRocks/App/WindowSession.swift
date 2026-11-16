@@ -71,11 +71,14 @@ final class WindowSession {
         }
     }
 
-    /// Connects a window opened by a request of this process. A request without a handed-off connection is a
-    /// window macOS restored after a relaunch: it stays on the connection screen and never connects by itself.
-    func connect(_ request: WindowRequest, store: ProfileStore) {
-        guard let connection = Self.handoff.take(request) else { return }
+    /// Connects a window opened by a request of this process; `false` when the request carries no handed-off
+    /// connection. Such a request was restored by macOS after a relaunch: the window then behaves exactly like a
+    /// new empty window (connection screen, launch arguments) and never connects by itself.
+    @discardableResult
+    func connect(_ request: WindowRequest, store: ProfileStore) -> Bool {
+        guard let connection = Self.handoff.take(request) else { return false }
         connect(profile: connection.profile, store: store, password: connection.password)
+        return true
     }
 
     /// A request for another window connected like this one, with the same profile and the password in use (so

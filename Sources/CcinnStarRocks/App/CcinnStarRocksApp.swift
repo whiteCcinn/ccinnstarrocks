@@ -101,10 +101,7 @@ struct RootView: View {
         .presentsSoftwareUpdates()
         .onDisappear { session.disconnect() }
         .task {
-            if let request {
-                session.connect(request, store: store)
-                return
-            }
+            if let request, session.connect(request, store: store) { return }
             LaunchArguments.consume(into: session, store: store) { openWindow(id: Self.windowGroupID, value: $0) }
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--settings"), arguments.indices.contains(index + 1) {
