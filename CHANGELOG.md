@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-16
+
 ### Added
 
 - **Check for Updates…** in the app menu. When a newer release exists, CcinnStarRocks shows its version and release notes. **Download & Open** downloads the disk image, verifies its size and SHA-256 against the release's `SHA256SUMS.txt`, saves it to Downloads without overwriting anything, and opens it. **Release Page**, **Skip This Version** and **Later** are also available.
@@ -37,6 +39,7 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/whiteCcinn/ccinnstarrocks/releases/tag/v1.0.0
