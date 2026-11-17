@@ -55,6 +55,54 @@ private final class EditorHarness {
 @Suite("SQL editor", .serialized)
 @MainActor
 struct SQLEditorTests {
+    // Review #2: the format result is applied only to the text it was computed from, never during composition.
+    @Test func formattingIsRefusedWhileComposingOrAfterTheTextChanged() throws {
+        let original = "select a from t"
+        let harness = EditorHarness(original)
+        let controller = SQLEditorController()
+        controller.textView = harness.textView
+        let formatted = try #require(SQLFormatter.format(original))
+        let whole = NSRange(location: 0, length: (original as NSString).length)
+        harness.textView.setSelectedRange(NSRange(location: whole.length, length: 0))
+        harness.textView.setMarkedText(" ni", selectedRange: NSRange(location: 3, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(controller.state?.isComposing == true)
+        #expect(controller.state?.text == "select a from t ni", "the editor's own text, ahead of the binding")
+        #expect(!controller.replace(whole, with: formatted, expecting: original, actionName: "Format SQL", selecting: NSRange(location: 0, length: 0)))
+        #expect(harness.textView.hasMarkedText(), "composition is left alone")
+        // Committed: the text is no longer what was formatted, so the stale range is refused (no `…FROM t t`).
+        harness.textView.insertText(" 你好", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!controller.replace(whole, with: formatted, expecting: original, actionName: "Format SQL", selecting: NSRange(location: 0, length: 0)))
+        #expect(harness.textView.string == "select a from t 你好")
+        let current = harness.textView.string
+        let reformatted = try #require(SQLFormatter.format(current))
+        #expect(controller.replace(NSRange(location: 0, length: (current as NSString).length), with: reformatted, expecting: current,
+                                   actionName: "Format SQL", selecting: NSRange(location: 0, length: 0)))
+        #expect(harness.textView.string == reformatted)
+    }
+
+    @Test func formattingIsOneUndoableEditThatEditTrackingSees() throws {
+        let original = "select a, b from t"
+        let harness = EditorHarness(original)
+        let undo = try #require(harness.textView.undoManager)
+        undo.groupsByEvent = false
+        let formatted = try #require(SQLFormatter.format(original))
+        let length = (original as NSString).length
+        undo.beginUndoGrouping()
+        #expect(harness.textView.replace(NSRange(location: 0, length: length), with: formatted, actionName: "Format SQL",
+                                         selecting: NSRange(location: 3, length: 0)))
+        undo.endUndoGrouping()
+        #expect(harness.textView.string == formatted)
+        #expect(harness.text == formatted, "the binding is updated like typing")
+        #expect(!harness.reportedEdits.isEmpty, "edit tracking sees the replacement")
+        #expect(harness.textView.selectedRange() == NSRange(location: 3, length: 0))
+        #expect(undo.undoActionName == "Format SQL")
+        undo.undo()
+        #expect(harness.textView.string == original, "one ⌘Z restores the original")
+        // Out-of-date ranges are refused instead of trapping.
+        #expect(!harness.textView.replace(NSRange(location: 0, length: 10_000), with: "x", actionName: "Format SQL",
+                                          selecting: NSRange(location: 0, length: 0)))
+    }
+
     // Review #2: a re-render while an input method composes must not overwrite the marked text.
     @Test func compositionSurvivesARenderWithLaggingText() {
         let harness = EditorHarness("SELECT 1")

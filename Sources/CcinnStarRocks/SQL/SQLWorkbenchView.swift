@@ -14,7 +14,7 @@ struct SQLWorkbenchView: View {
                     SQLEditor(text: $model.text, selection: $model.selection, diagnostics: model.diagnostics,
                               completionProvider: { [model] text, cursor in await model.completions(text: text, cursor: cursor) },
                               onEdit: { [model] edits in model.editorDidEdit(edits) },
-                              focusOnAppear: true)
+                              focusOnAppear: true, controller: model.editorController)
                     DiagnosticsBar(model: model)
                 }
                 .frame(minHeight: 110, idealHeight: 260)
@@ -71,6 +71,14 @@ private struct WorkbenchToolbar: View {
             .fixedSize()
             .disabled(model.isRunning)
             .help("Show the query plan (⌘E)")
+
+            Button {
+                model.formatSQL()
+            } label: {
+                Label("Format", systemImage: "text.alignleft")
+            }
+            .disabled(model.isFormatting)
+            .help("Format the selection, or the whole script when nothing is selected (⌥⌘L)")
 
             if model.isRunning {
                 Button(role: .destructive) {
@@ -174,7 +182,13 @@ private struct DiagnosticsBar: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
-                if let index = SQLDiagnosticNavigator.currentIndex(in: diagnostics, cursor: cursor, preferred: preferred) {
+                if let notice = model.formatNotice {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                    Text(notice)
+                        .foregroundStyle(.secondary)
+                        .help(notice)
+                } else if let index = SQLDiagnosticNavigator.currentIndex(in: diagnostics, cursor: cursor, preferred: preferred) {
                     problem(diagnostics, index)
                 }
                 Spacer(minLength: 8)

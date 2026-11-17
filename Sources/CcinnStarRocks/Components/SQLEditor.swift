@@ -4,6 +4,29 @@ import SwiftUI
 
 typealias CompletionProvider = @MainActor (_ text: String, _ cursor: Int) async -> CompletionResult
 
+/// Lets a model read the editor's own text and change it the way typing does: one undoable edit that the editor's
+/// edit tracking (and so the diagnostics) sees.
+@MainActor
+final class SQLEditorController {
+    weak var textView: SQLTextView?
+
+    var isAttached: Bool { textView != nil }
+
+    /// The editor's text and selection. The model's copy lags behind while an input method composes.
+    var state: (text: String, selection: NSRange, isComposing: Bool)? {
+        guard let textView else { return nil }
+        return (textView.string, textView.selectedRange(), textView.hasMarkedText())
+    }
+
+    /// Replaces `range` and selects `selection`, but only while the editor still holds `expected` and nothing is
+    /// being composed; `false` otherwise.
+    @discardableResult
+    func replace(_ range: NSRange, with replacement: String, expecting expected: String, actionName: String,
+                 selecting selection: NSRange) -> Bool {
+        textView?.replace(range, with: replacement, expecting: expected, actionName: actionName, selecting: selection) ?? false
+    }
+}
+
 /// SQL editor on NSTextView: lexer-driven highlighting, line numbers, current-statement highlight,
 /// diagnostics (underlines and inline messages), bracket/quote pairing, comment toggling and
 /// context-aware completion.
@@ -20,6 +43,7 @@ struct SQLEditor: NSViewRepresentable {
     /// Edits made by the user, reported before `text` is updated (see `SQLTabModel.editorDidEdit`).
     var onEdit: (@MainActor ([SQLTextEdit]) -> Void)?
     var focusOnAppear = false
+    var controller: SQLEditorController?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -70,6 +94,7 @@ struct SQLEditor: NSViewRepresentable {
         }
 
         context.coordinator.textView = textView
+        controller?.textView = textView
         textView.string = text
         textView.textStorage?.delegate = context.coordinator
         context.coordinator.diagnostics = diagnostics
@@ -542,6 +567,31 @@ final class SQLTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    /// Replaces `range` with `replacement` as a single undo step (⌘Z restores the original), then selects
+    /// `selection`. Goes through `shouldChangeText` / `didChangeText` like typing, so edit tracking sees it.
+    /// Refused while an input method composes, or when the text is no longer `expected` (the range would be stale).
+    func replace(_ range: NSRange, with replacement: String, expecting expected: String? = nil, actionName: String,
+                 selecting selection: NSRange) -> Bool {
+        let length = (string as NSString).length
+        guard isEditable, !hasMarkedText(), range.location >= 0, NSMaxRange(range) <= length, let textStorage else { return false }
+        if let expected, expected != string { return false }
+        breakUndoCoalescing()
+        undoManager?.beginUndoGrouping()
+        defer {
+            undoManager?.endUndoGrouping()
+            breakUndoCoalescing()
+        }
+        guard shouldChangeText(in: range, replacementString: replacement) else { return false }
+        textStorage.replaceCharacters(in: range, with: NSAttributedString(string: replacement, attributes: typingAttributes))
+        didChangeText()
+        undoManager?.setActionName(actionName)
+        let updated = (string as NSString).length
+        let clamped = NSRange(location: min(selection.location, updated), length: min(selection.length, max(0, updated - min(selection.location, updated))))
+        setSelectedRange(clamped)
+        scrollRangeToVisible(clamped)
+        return true
     }
 
     override func complete(_ sender: Any?) {

@@ -115,6 +115,7 @@ final class SQLTabModel {
     /// Open) replaces the text, which makes every server diagnostic stale.
     var text: String {
         didSet {
+            formatRuns.textChanged(from: oldValue, to: text) // a running format would no longer apply
             if editorEditPending {
                 editorEditPending = false
                 if lineIndexIsStale { rebuildLineIndex() }
@@ -169,6 +170,82 @@ final class SQLTabModel {
     var autoLimit: Int {
         get { UserDefaults.standard.object(forKey: "autoLimit") as? Int ?? 1000 }
         set { UserDefaults.standard.set(newValue, forKey: "autoLimit") }
+    }
+
+    // MARK: Formatting
+
+    /// The editor of this tab, for edits that must be undoable (formatting).
+    let editorController = SQLEditorController()
+    let formatRuns = SQLFormatRuns()
+    var isFormatting: Bool { formatRuns.isRunning }
+    /// Why the last Format SQL changed nothing, shown briefly in the editor's status bar.
+    var formatNotice: String? { formatRuns.notice }
+
+    /// Settings ▸ General ▸ SQL formatting, and whether the connected server reads `$$ … $$` blocks.
+    var formatOptions: SQLFormatOptions {
+        let defaults = UserDefaults.standard
+        let keywordCase = defaults.string(forKey: "sqlFormatKeywordCase").flatMap(SQLFormatOptions.KeywordCase.init(rawValue:)) ?? .upper
+        let indent = defaults.object(forKey: "sqlFormatIndent") as? Int ?? 2
+        return SQLFormatOptions(keywordCase: keywordCase, indentWidth: indent, dollarQuotedBlocks: readsDollarQuotedBlocks)
+    }
+
+    /// StarRocks 4.1 reads `$$ … $$` (inline function bodies) as one block; 3.3 and unknown versions do not. Only the
+    /// release `current_version()` reported counts: fallbacks (3.3 announces 5.1.0, 4.1 announces 8.0.33) are unknown.
+    private var readsDollarQuotedBlocks: Bool {
+        workspace.serverInfo.releaseVersion.map { SQLFormatOptions.dollarQuotedBlocksSupported(major: $0.major, minor: $0.minor) } ?? false
+    }
+
+    private func noteFormatSkipped(_ notice: String) {
+        formatRuns.note(notice)
+    }
+
+    /// Formats the selection, or the whole script when nothing is selected, as one undoable edit. Works on the editor's
+    /// own text (the model's copy lags behind while an input method composes) and off the main actor; a newer format or
+    /// any edit cancels it, and the result is applied only if the editor still holds the formatted text.
+    func formatSQL() {
+        formatRuns.cancel()
+        let live = editorController.state
+        if live?.isComposing == true { // an input method is composing: format once it commits
+            noteFormatSkipped("Format SQL skipped while composing")
+            return
+        }
+        let source = live?.text ?? text
+        let cursor = live?.selection ?? selection
+        let length = (source as NSString).length
+        let formatsSelection = cursor.length > 0 && NSMaxRange(cursor) <= length
+        let range = formatsSelection ? cursor : NSRange(location: 0, length: length)
+        let options = formatOptions
+        formatRuns.start({
+            if formatsSelection { return SQLFormatter.formatSelection(in: source, range: range, options: options) }
+            return SQLFormatter.format(source, options: options).map { SQLFormatEdit(range: range, replacement: $0) }
+        }, apply: { [weak self] edit in
+            self?.applyFormat(edit, source: source, cursor: cursor, formatsSelection: formatsSelection)
+        })
+    }
+
+    private func applyFormat(_ edit: SQLFormatEdit?, source: String, cursor: NSRange, formatsSelection: Bool) {
+        guard let edit else {
+            noteFormatSkipped("Format SQL skipped: couldn't prove the result equivalent")
+            return
+        }
+        let nsSource = source as NSString
+        guard edit.replacement != nsSource.substring(with: edit.range) else { return }
+        let newSelection = formatsSelection
+            ? NSRange(location: edit.range.location, length: (edit.replacement as NSString).length)
+            : NSRange(location: SQLFormatter.mapOffset(cursor.location, from: source, to: edit.replacement), length: 0)
+        if editorController.isAttached {
+            // Refused when the editor text changed or an input method started composing meanwhile.
+            if !editorController.replace(edit.range, with: edit.replacement, expecting: source, actionName: "Format SQL", selecting: newSelection) {
+                noteFormatSkipped(editorController.state?.isComposing == true ? "Format SQL skipped while composing"
+                                                                               : "Format SQL skipped: the text changed")
+            }
+        } else if text == source {
+            // No editor yet (a tab opened from launch arguments): replace the text directly.
+            text = nsSource.replacingCharacters(in: edit.range, with: edit.replacement)
+            selection = newSelection
+        } else {
+            noteFormatSkipped("Format SQL skipped: the text changed")
+        }
     }
 
     init(title: String, text: String, database: String?, catalog: String, workspace: WorkspaceModel) {
@@ -248,10 +325,11 @@ final class SQLTabModel {
     private func scheduleLint(after delay: Duration = .milliseconds(300)) {
         lintTask?.cancel()
         let snapshot = text
+        let blocks = readsDollarQuotedBlocks
         lintTask = Task { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
             guard !Task.isCancelled else { return }
-            let found = await Task.detached(priority: .utility) { SQLLinter.diagnose(snapshot) }.value
+            let found = await Task.detached(priority: .utility) { SQLLinter.diagnose(snapshot, dollarQuotedBlocks: blocks) }.value
             // Any edit since the snapshot cancelled this task (both run on the main actor).
             guard let self, !Task.isCancelled else { return }
             if found != self.localDiagnostics { self.localDiagnostics = found }

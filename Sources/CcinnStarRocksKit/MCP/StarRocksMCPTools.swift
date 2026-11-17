@@ -405,6 +405,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
 
     private func explain(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
         let sql = try args.required("sql")
+        if let ambiguous = ReadOnlySQLGuard.ambiguityRejection(sql) { throw MCPToolError(ambiguous) }
         guard let statement = SQLStatementSplitter.split(sql).first?.text, SQLStatementSplitter.split(sql).count == 1 else {
             throw MCPToolError("Pass exactly one SELECT query.")
         }
@@ -422,6 +423,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
     /// The one statement `execute_statement` may run. Cluster setting changes are refused: the SQL editor asks the
     /// user to confirm them, and an MCP call cannot be confirmed.
     static func executableStatement(_ sql: String) throws -> String {
+        if let ambiguous = ReadOnlySQLGuard.ambiguityRejection(sql) { throw MCPToolError(ambiguous) }
         let statements = SQLStatementSplitter.split(sql)
         guard statements.count == 1, let statement = statements.first?.text else {
             throw MCPToolError("Pass exactly one statement per call.")

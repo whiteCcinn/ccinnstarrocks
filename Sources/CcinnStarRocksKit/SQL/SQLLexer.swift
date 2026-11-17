@@ -32,9 +32,14 @@ public struct SQLToken: Sendable, Equatable {
 /// end of the input, unknown characters become operators. Linear time over UTF-16 code units.
 public struct SQLLexer: Sendable {
     public let units: [UInt16]
+    /// Reads `$$ … $$` as one opaque token, as StarRocks 4.1 does for inline function bodies. Off by default: 3.3 reads
+    /// `$$` as part of a name, and statement splitting and the read-only guard must never see fewer statements than any
+    /// supported server. Only consumers that know the server reads blocks (the formatter on 4.1) turn it on.
+    public let dollarQuotedBlocks: Bool
 
-    public init(_ text: String) {
+    public init(_ text: String, dollarQuotedBlocks: Bool = false) {
         units = Array(text.utf16)
+        self.dollarQuotedBlocks = dollarQuotedBlocks
     }
 
     public static func tokenize(_ text: String) -> [SQLToken] {
@@ -99,6 +104,10 @@ public struct SQLLexer: Sendable {
                     while index < count, Self.isIdentifierPart(units[index]) || units[index] == 0x2E { index += 1 }
                 }
                 tokens.append(SQLToken(kind: .variable, range: start..<index))
+            case 0x24 where dollarQuotedBlocks && peek(index + 1) == 0x24: // $$ … $$: an inline function body (StarRocks 4.1)
+                let (end, isBlock) = endOfDollarWord(from: index)
+                index = end
+                tokens.append(SQLToken(kind: isBlock ? .string : .identifier, range: start..<index))
             case 0x30...0x39:
                 index = endOfNumber(from: index)
                 tokens.append(SQLToken(kind: .number, range: start..<index))
@@ -111,6 +120,8 @@ public struct SQLLexer: Sendable {
             default:
                 if Self.isIdentifierStart(unit) {
                     while index < count, Self.isIdentifierPart(units[index]) { index += 1 }
+                    // Upper-cased like the server, which reads `ın` as IN; consumers that change text (the formatter)
+                    // must treat non-ASCII words as names themselves.
                     let word = String(decoding: units[start..<index], as: UTF16.self).uppercased()
                     let kind: SQLToken.Kind = SQLKeywords.all.contains(word) ? .keyword : .identifier
                     tokens.append(SQLToken(kind: kind, range: start..<index))
@@ -171,6 +182,9 @@ public struct SQLLexer: Sendable {
         let start = token.range.lowerBound
         guard token.range.upperBound >= units.count, start >= 0, start < units.count else { return false }
         switch token.kind {
+        case .string where units[start] == 0x24: // $$ … $$
+            let end = token.range.upperBound
+            return token.range.count < 4 || !(units[end - 2] == 0x24 && units[end - 1] == 0x24)
         case .string, .quotedIdentifier:
             return !scanQuoted(from: start, quote: units[start], backslashEscapes: token.kind == .string).closed
         case .comment:
@@ -182,36 +196,42 @@ public struct SQLLexer: Sendable {
         }
     }
 
-    private func endOfNumber(from index: Int) -> Int {
-        var index = index
-        if units[index] == 0x30, let next = peek(index + 1), next == 0x78 || next == 0x58 { // 0x…
-            index += 2
-            while index < units.count, Self.isHexDigit(units[index]) { index += 1 }
-            return index
+    /// A token starting with `$$`, as StarRocks 4.1 reads it: the longer of a name (`$$abc$$`, identifier characters
+    /// only) and a `$$ … $$` block kept as one opaque token. An unclosed block runs to the end of the text.
+    private func endOfDollarWord(from start: Int) -> (end: Int, isBlock: Bool) {
+        var word = start
+        while word < units.count, Self.isIdentifierPart(units[word]) { word += 1 }
+        var close = start + 2
+        while close + 1 < units.count, !(units[close] == 0x24 && units[close + 1] == 0x24) { close += 1 }
+        let block = close + 1 < units.count ? close + 2 : units.count
+        return block > word ? (block, true) : (word, false)
+    }
+
+    /// Where a token starting with a digit (or `.digit`) ends, as StarRocks decides: the longer of a word (a digit or
+    /// `.digit` followed by identifier characters: `1abc`, `1e2x`, `0x1F`, `.5x`) and a numeric literal (`1`, `1.`,
+    /// `1.5`, `.5`, `1e5`, `1.5e-3`). So `1.5x`, `1.end` and `1e+5x` end after the number and the word that follows is
+    /// a token of its own. Checked against live servers by the integration tests.
+    private func endOfNumber(from start: Int) -> Int {
+        var literal = start
+        while literal < units.count, Self.isDigit(units[literal]) { literal += 1 }
+        if peek(literal) == 0x2E {
+            literal += 1
+            while literal < units.count, Self.isDigit(units[literal]) { literal += 1 }
         }
-        while index < units.count, Self.isDigit(units[index]) { index += 1 }
-        if peek(index) == 0x2E {
-            index += 1
-            while index < units.count, Self.isDigit(units[index]) { index += 1 }
-        }
-        if let e = peek(index), e == 0x65 || e == 0x45 {
-            var lookahead = index + 1
+        if let e = peek(literal), e == 0x65 || e == 0x45 {
+            var lookahead = literal + 1
             if let sign = peek(lookahead), sign == 0x2B || sign == 0x2D { lookahead += 1 }
             if let digit = peek(lookahead), Self.isDigit(digit) {
-                index = lookahead
-                while index < units.count, Self.isDigit(units[index]) { index += 1 }
+                literal = lookahead
+                while literal < units.count, Self.isDigit(units[literal]) { literal += 1 }
             }
         }
-        // `1abc` is an identifier in MySQL; absorb trailing identifier characters into the number token.
-        while index < units.count, Self.isIdentifierPart(units[index]) { index += 1 }
-        return index
+        var word = units[start] == 0x2E ? start + 1 : start
+        while word < units.count, Self.isIdentifierPart(units[word]) { word += 1 }
+        return max(literal, word)
     }
 
     static func isDigit(_ unit: UInt16) -> Bool { unit >= 0x30 && unit <= 0x39 }
-
-    static func isHexDigit(_ unit: UInt16) -> Bool {
-        isDigit(unit) || (unit >= 0x41 && unit <= 0x46) || (unit >= 0x61 && unit <= 0x66)
-    }
 
     static func isIdentifierStart(_ unit: UInt16) -> Bool {
         (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A) || unit == 0x5F || unit == 0x24 || unit >= 0x80

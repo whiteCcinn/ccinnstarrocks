@@ -238,3 +238,59 @@ struct MCPProfileTests {
         #expect(encoded.serialized().utf8.count <= 64 * 1024 + 512)
     }
 }
+
+/// Supported StarRocks versions disagree about `$$` (a code block on 4.1, part of a name on 3.3), so a `-- $$` can hide a
+/// statement from one of them. Every consumer that counts statements refuses `$$`, or still sees what 3.3 runs.
+@Suite("Version-ambiguous $$")
+struct DollarQuoteSecurityTests {
+    static let hidden = [
+        "SELECT 1 $$a; CREATE DATABASE ccinn_rv_ms -- $$",
+        "SELECT 1 $$a INTO OUTFILE 'x' -- $$",
+        "SELECT 1 $$a; ADMIN SET FRONTEND CONFIG (\"enable_udf\" = \"true\") -- $$",
+    ]
+
+    @Test(arguments: hidden)
+    func runQueryRejects(sql: String) {
+        #expect(ReadOnlySQLGuard.check(sql)?.contains("$$") == true, "\(sql)")
+    }
+
+    @Test(arguments: hidden)
+    func executeStatementRejects(sql: String) {
+        #expect { _ = try StarRocksMCPTools.executableStatement(sql) } throws: { error in
+            (error as? MCPToolError)?.message.contains("$$") == true
+        }
+    }
+
+    @Test func theSharedSplitterSeesWhatStarRocks33Runs() throws {
+        #expect(SQLStatementSplitter.split(Self.hidden[0]).count == 2)
+        let statements = SQLStatementSplitter.split(Self.hidden[2]).map(\.text)
+        #expect(statements.count == 2)
+        #expect(ClusterSettingChange.of(statements[1]) != nil)
+        // The editor still asks before the hidden setting change.
+        let confirmation = try #require(RunConfirmation.required(for: statements, confirmMutations: false))
+        #expect(confirmation.changesSettings)
+    }
+
+    /// Only a `$$` that could start a 4.1 block counts: one outside strings, comments and back-quoted names.
+    @Test(arguments: ["SELECT * FROM t WHERE a LIKE '%$$%'", "SELECT '$$'", "SELECT 1 -- costs $$", "SELECT `col$$x` FROM t",
+                      "SELECT \"$$\" FROM t /* $$ */"])
+    func dollarsInsideLiteralsAreAllowed(sql: String) throws {
+        #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql)")
+        #expect(ReadOnlySQLGuard.ambiguityRejection(sql) == nil, "\(sql)")
+        #expect(try StarRocksMCPTools.executableStatement(sql) == sql)
+    }
+
+    @Test(arguments: ["SELECT a$$b FROM t", "SELECT $$ x $$", "SELECT 1$$", "SELECT @$$v", "SELECT 'a'$$b"])
+    func dollarsInCodeAreRefused(sql: String) {
+        #expect(ReadOnlySQLGuard.ambiguityRejection(sql) != nil, "\(sql)")
+    }
+
+    /// The lexer changes of the formatter round never let the guard see less than the server: `ınto` is INTO for
+    /// StarRocks (it upper-cases per character) and for the guard, and `1.5into` is `1.5` + INTO on both.
+    @Test func lexerChangesKeepTheGuardConservative() {
+        #expect(ReadOnlySQLGuard.check("SELECT 1 ınto outfile 'x'") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT 1.5into outfile 'x'") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT 1e+5into outfile 'x'") != nil)
+        #expect(SQLStatementSplitter.split("SELECT 1.5;SELECT 2").count == 2)
+    }
+}

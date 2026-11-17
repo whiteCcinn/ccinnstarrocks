@@ -11,8 +11,23 @@ public enum ReadOnlySQLGuard {
         "REFRESH", "ANALYZE", "BACKUP", "RESTORE", "LOAD", "EXPORT", "SWAP", "UPSERT", "MERGE",
     ]
 
+    /// Text where supported servers disagree about statement boundaries. StarRocks 4.1 reads `$$ … $$` as one block
+    /// while 3.3 reads `$$` as part of a name, so `SELECT 1 $$a; DROP … -- $$` is one statement on one version and two on
+    /// the other. A block can only start where code is, so any `$$` outside strings, comments and back-quoted names (as
+    /// 3.3 lexes the text) is refused; `LIKE '%$$%'` or `-- costs $$` are fine.
+    public static func ambiguityRejection(_ sql: String) -> String? {
+        let lexer = SQLLexer(sql) // `$$` blocks off: what StarRocks 3.3 reads
+        let ambiguous = lexer.tokens().contains { token in
+            token.kind != .string && token.kind != .comment && token.kind != .quotedIdentifier
+                && SQLFormatter.containsDollarPair(lexer.units[token.range])
+        }
+        guard ambiguous else { return nil }
+        return "Statements with $$ outside quotes and comments are not allowed here: StarRocks versions read $$ differently (a code block on 4.1, part of a name on 3.3), so where the statement ends cannot be known."
+    }
+
     /// `nil` when allowed; otherwise the reason it is rejected.
     public static func check(_ sql: String) -> String? {
+        if let ambiguous = ambiguityRejection(sql) { return ambiguous }
         let statements = SQLStatementSplitter.split(sql)
         guard let statement = statements.first else { return "The statement is empty." }
         guard statements.count == 1 else { return "Only one statement can be run at a time; send statements separately." }

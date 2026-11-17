@@ -57,6 +57,36 @@ struct MCPIntegrationTests {
     }
 }
 
+/// `$$` is a code block on StarRocks 4.1 and part of a name on 3.3, so `-- $$` hides a statement from one of them. The
+/// MCP tools refuse every such text on every version, and nothing hidden runs.
+@Suite("MCP and version-ambiguous $$", .serialized)
+struct MCPDollarQuoteTests {
+    @Test(arguments: IntegrationEnvironment.targets)
+    func hiddenStatementsAreRefused(target: IntegrationEnvironment.Target) async throws {
+        let process = try MCPProcess(target: target)
+        defer { process.terminate() }
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        try process.send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        let hidden = [
+            "SELECT 1 $$a; CREATE DATABASE ccinn_rv_ms -- $$",
+            "SELECT 1 $$a INTO OUTFILE 'x' -- $$",
+            "SELECT 1 $$a; ADMIN SET FRONTEND CONFIG (\"enable_udf\" = \"true\") -- $$",
+        ]
+        for (offset, sql) in hidden.enumerated() {
+            for tool in ["run_query", "explain_query"] {
+                let response = try await process.request(["jsonrpc": "2.0", "id": .int(Int64(10 + offset * 2 + (tool == "run_query" ? 0 : 1))),
+                                                          "method": "tools/call", "params": ["name": .string(tool), "arguments": ["sql": .string(sql)]]])
+                #expect(response["result"]?["isError"] == .bool(true), "\(tool): \(sql)")
+            }
+        }
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let databases = try await client.databases()
+        #expect(!databases.contains("ccinn_rv_ms"), "the hidden CREATE DATABASE never ran")
+    }
+}
+
 /// A running MCP server subprocess with a temporary profile directory.
 final class MCPProcess: @unchecked Sendable {
     static var binary: URL {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import StarRocksKit
+import CcinnStarRocksKit
 
 /// Live tests against StarRocks containers started by `scripts/sr-up.sh`:
 ///   export CCINNSR_IT_URIS="3.3=127.0.0.1:19033,4.1=127.0.0.1:19041"
@@ -231,6 +232,204 @@ struct StarRocksIntegrationTests {
         #expect(withHistory.historyError == nil)
         #expect(Set(withHistory.jobs.map(\.id)).count == withHistory.jobs.count)
         #expect(withHistory.jobs.contains { $0.label == label })
+    }
+
+    /// Formatted statements run and return exactly what the originals return.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func formattedStatementsRunTheSame(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let statements = [
+            "select o.city, count(*) n, sum(o.total) as total from shop.orders o where o.order_date between '2024-01-01' and '2024-06-30' and o.status in ('paid','shipped') group by o.city having count(*) > 0 order by total desc, o.city limit 5",
+            "select c.customer_id, c.city, (select count(*) from shop.orders x where x.city = c.city) as orders, count(o.order_id) n from shop.customers c left join shop.orders o on o.city = c.city and o.total > 10 where c.customer_id < 20 group by c.customer_id, c.city order by c.customer_id",
+            "with paid as (select * from shop.orders where status = 'paid'), cities as (select distinct city from paid) select case when count(*) > 10 then 'many' when count(*) > 0 then 'some' else 'none' end k, count(*) from cities",
+            "select city, sum(total) over (partition by city order by order_date, order_id rows between unbounded preceding and current row) s from shop.orders order by city, order_date, order_id limit 10",
+            "/* note */ select /*+ SET_VAR(query_timeout = 30) */ -1 * qty as q, `city` from shop.orders where -total < 0 order by order_id limit 3 -- end",
+            "show partitions from shop.orders",
+            "show create table shop.orders",
+            "select * from shop.v_paid_orders order by 1 limit 3",
+            // Review regressions: names the server accepts keep their case; touching tokens stay touching.
+            "with `current` as (select 1 x) select * from current",
+            "select a as interval, b rollup, c as current from (select 1 a, 2 b, 3 c) semi",
+            "select 0xabc_flag, t.1abc from (select 7 as `0xabc_flag`, 8 as `1abc`) t",
+            "select sum(qty) over (partition by city order by order_id rows between current row and unbounded following) s from shop.orders order by order_id limit 5",
+            "select city, order_id from shop.orders order by city nulls last, order_id limit 5 offset 2",
+            "select user(), year('2020-01-01'), quarter('2020-01-01'), date_add('2020-01-01', interval -1 day)",
+        ]
+        for statement in statements {
+            let formatted = try #require(SQLFormatter.format(statement), "\(statement)")
+            #expect(formatted != statement)
+            let expected = try await client.execute(statement)
+            let actual = try await client.execute(formatted)
+            #expect(actual.columnNames == expected.columnNames, "\(formatted)")
+            #expect(actual.rows == expected.rows, "\(formatted)")
+        }
+        // DDL: the formatted CREATE TABLE creates the same table.
+        let name = "ccinn_fmt_\(UInt32.random(in: 0...UInt32.max))"
+        let ddl = "create table shop.\(name) (id bigint not null comment 'id', name varchar(32), total decimal(12, 2)) duplicate key(id) distributed by hash(id) buckets 2 properties (\"replication_num\" = \"1\")"
+        let formattedDDL = try #require(SQLFormatter.format(ddl))
+        _ = try await client.execute(formattedDDL)
+        let created = try await client.execute("SHOW CREATE TABLE shop.\(name)").rows.first?.last ?? nil
+        _ = try await client.execute("DROP TABLE shop.\(name) FORCE")
+        #expect(created?.contains("DUPLICATE KEY(`id`)") == true)
+        #expect(created?.contains("DISTRIBUTED BY HASH(`id`) BUCKETS 2") == true)
+    }
+
+    /// Statements whose keyword-named names once changed meaning when formatted: raw and formatted must behave the
+    /// same (the same rows, or both rejected where a version does not accept the name).
+    @Test(arguments: IntegrationEnvironment.targets)
+    func keywordNamedNamesBehaveTheSameFormatted(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let statements = [
+            "select case when 1=1 then end.a else 0 end from (select 5 a) end, (select 6 a) `END`",
+            "select minus.x from (select 1 a) minus (x)",
+            "select except.x from (select 1 a) except (x)",
+            "select current.a, end.a from (select 1 a) current, (select 2 a) end",
+            "select case when end.a > 0 then minus.a else end.a end from (select 3 a) end, (select 4 a) minus",
+            "select 1 a minus select 2",
+            "select 1 a minus (select 2)",
+            "with end as (select 5 a), `END` as (select 6 a) select case when 1=1 then 1 else view end x, a from (select 1 view) t1, end",
+            "with end as (select 5 a), `END` as (select 6 a) select case when 1=1 then 1 else overwrite end x, a from (select 1 overwrite) t1, end",
+            "select [end.a] from (select 1 a) end",
+            "with end as (select 7 a) select end.a from end",
+            "select * from (select 1 a) t, unnest([1, 2]) minus(v) order by v",
+            "select * from (select 1 a) t, unnest([1, 2]) except(v) order by v",
+            "select case when 1=1 then 1.5 end, end.a from (select 5 a) end, (select 6 a) `END`",
+            "with `end` as (select 5 a), `END` as (select 6 a) select case when 1=1 then named_struct('a', 1) end.a x, a from (select 0 z) t1, end",
+            "select case when 1=1 then named_struct('a', 5) end.a",
+        ]
+        // The server upper-cases per character: `exiſts` is EXISTS there. The formatter refuses such words.
+        let folded = "select count(*) from (select 1 a) t where exiſts (select 1)"
+        let value = try await client.execute(folded).rows.first?.first ?? nil
+        #expect(value == "1", "the server reads exiſts as EXISTS")
+        for refused in [folded, "create table if not exiſts properties (k int) duplicate key(k) distributed by hash(k) buckets 1 properties ('replication_num' = '1')"] {
+            #expect(SQLFormatter.format(refused) == nil, "\(refused)")
+        }
+        for statement in statements {
+            let formatted = try #require(SQLFormatter.format(statement), "\(statement)")
+            let raw = await outcome(client, statement)
+            let actual = await outcome(client, formatted)
+            #expect(raw == actual, "\(statement)\n→ \(formatted)")
+        }
+    }
+
+    /// The lexer ends number-like words where the server does. The server's reading of `SELECT <text>` shows in the
+    /// result: one column labelled with the trailing word = number + alias; "Column '<text>' cannot be resolved" = one
+    /// identifier; any other result = one literal. A trailing END is read inside a CASE (closed = a separate END).
+    /// Wherever the two disagree, the formatter must refuse.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func lexerEndsNumbersWhereTheServerDoes(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let prefixes = ["1", "12", "1.", "1.5", ".5", "1e2", "1E2", "1e+2", "1e-2", "1.5e2", "1.e2", "0x1F", "0x", "1_0"]
+        let words = ["x", "abc", "e", "e2", "E5", "_y", "$z"]
+        var disagreements: [String] = []
+        func check(_ sql: String, _ text: String, server: [String]) {
+            let lexer = SQLLexer(text)
+            let ours = lexer.tokens().map { lexer.text(of: $0) }
+            guard ours != server else { return }
+            disagreements.append("\(text): server \(server), lexer \(ours)")
+            #expect(SQLFormatter.format(sql) == nil, "\(sql): the lexer disagrees with the server, so the formatter must refuse")
+        }
+        for prefix in prefixes {
+            for word in words {
+                let text = prefix + word
+                let sql = "SELECT \(text)"
+                do {
+                    let result = try await client.execute(sql)
+                    if result.columnNames.count == 1, let label = result.columnNames.first, !label.isEmpty,
+                       label.count < text.count, text.lowercased().hasSuffix(label.lowercased()) {
+                        check(sql, text, server: [String(text.dropLast(label.count)), String(text.suffix(label.count))])
+                    } else {
+                        check(sql, text, server: [text])
+                    }
+                } catch {
+                    let message = ((error as? StarRocksError)?.message ?? "\(error)").lowercased()
+                    // "Column '<text>' cannot be resolved" or "Unexpected input '<text>'": one token.
+                    if message.contains("'\(text.lowercased())'"), message.contains("cannot be resolved") || message.contains("unexpected input") {
+                        check(sql, text, server: [text])
+                    } else {
+                        disagreements.append("\(text): unexpected server answer \(message)")
+                    }
+                }
+            }
+            let text = prefix + "end"
+            let sql = "SELECT CASE WHEN TRUE THEN \(text)"
+            let closed = (try? await client.execute(sql)) != nil
+            check(sql, text, server: closed ? [prefix, "end"] : [text])
+        }
+        #expect(disagreements.isEmpty, "\(disagreements)")
+    }
+
+    /// `$$` per version: StarRocks 4.1 reads `$$ … $$` as one token, 3.3 reads `$$a` as a name. The formatter's version
+    /// rule turns blocks on exactly where the server reads them; on 4.1 a formatted inline UDF keeps its body byte for
+    /// byte and is accepted, and on 3.3 the formatter refuses.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func dollarQuotedBlocksFollowTheServerVersion(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let version = try #require(client.serverInfo.releaseVersion, "current_version() answered")
+        let blocks = SQLFormatOptions.dollarQuotedBlocksSupported(major: version.major, minor: version.minor)
+        // The server's reading of `$$a b ( $$`: one token ("Unexpected input '$$a b ( $$'") or several.
+        var serverReadsOneToken = false
+        do {
+            _ = try await client.execute("SELECT $$a b ( $$")
+        } catch {
+            serverReadsOneToken = ((error as? StarRocksError)?.message ?? "\(error)").contains("'$$a b ( $$'")
+        }
+        #expect(serverReadsOneToken == blocks, "the version rule matches the server")
+        let lexer = SQLLexer("$$a b ( $$", dollarQuotedBlocks: blocks)
+        #expect((lexer.tokens().count == 1) == serverReadsOneToken)
+
+        let body = "\ndef inc(x):\n    if x is None:\n        return None\n    return True if x else False  # ( unbalanced\n"
+        let name = "ccinn_fmt_udf_\(UInt32.random(in: 0...UInt32.max))"
+        let sql = "create function shop.\(name)(int) returns boolean properties (\"symbol\" = \"inc\", \"type\" = \"Python\", \"file\" = \"inline\") as $$\(body)$$"
+        let formatted = SQLFormatter.format(sql, options: SQLFormatOptions(dollarQuotedBlocks: blocks))
+        guard blocks else {
+            #expect(formatted == nil, "a server that does not read blocks: refused")
+            return
+        }
+        let text = try #require(formatted)
+        #expect(text.hasSuffix("AS $$\(body)$$"), "the body is byte-identical")
+        _ = try await client.execute(text)
+        _ = try await client.execute("DROP FUNCTION shop.\(name)(INT)")
+    }
+
+    private enum Outcome: Equatable {
+        case rows(columns: [String], rows: [[String?]])
+        case rejected
+    }
+
+    private func outcome(_ client: StarRocksClient, _ sql: String) async -> Outcome {
+        do {
+            let result = try await client.execute(sql)
+            return .rows(columns: result.columnNames, rows: result.rows)
+        } catch {
+            return .rejected
+        }
+    }
+
+    /// Every word the formatter may recase anywhere is rejected as a table name and as an alias, so recasing it can
+    /// never name another table. A StarRocks release that frees one of these words fails here.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func caseSafeKeywordsAreNeverNames(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        var accepted: [String] = []
+        for word in SQLFormatter.caseSafeKeywords.sorted() {
+            let name = word.lowercased()
+            for probe in ["SELECT 1 FROM shop.\(name)", "SELECT 1 AS \(name)"] {
+                do {
+                    _ = try await client.execute(probe)
+                    accepted.append(probe)
+                } catch {
+                    let message = (error as? StarRocksError)?.message ?? "\(error)"
+                    if !message.lowercased().contains("syntax error") { accepted.append("\(probe) → \(message)") }
+                }
+            }
+        }
+        #expect(accepted.isEmpty, "accepted as names: \(accepted)")
     }
 
     @Test(arguments: IntegrationEnvironment.targets)

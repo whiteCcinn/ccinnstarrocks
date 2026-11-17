@@ -270,6 +270,11 @@ final class WorkspaceModel {
 
     var selectedTab: WorkspaceTab? { tabs.first { $0.id == selectedTabID } }
 
+    var selectedSQL: SQLTabModel? {
+        if case let .sql(model)? = selectedTab?.kind { return model }
+        return nil
+    }
+
     var selectedOperations: OperationsModel? {
         if case let .operations(model)? = selectedTab?.kind { return model }
         return nil

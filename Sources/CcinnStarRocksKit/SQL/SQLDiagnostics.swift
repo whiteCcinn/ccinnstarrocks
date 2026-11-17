@@ -180,8 +180,10 @@ public enum SQLLinter {
     /// Same bound as the editor's highlighting; larger scripts are not checked.
     public static let maximumLength = 4_000_000
 
-    public static func diagnose(_ text: String) -> [SQLDiagnostic] {
-        let lexer = SQLLexer(text)
+    /// `dollarQuotedBlocks`: the connected server reads `$$ … $$` as one block (StarRocks 4.1), so nothing inside one
+    /// is checked.
+    public static func diagnose(_ text: String, dollarQuotedBlocks: Bool = false) -> [SQLDiagnostic] {
+        let lexer = SQLLexer(text, dollarQuotedBlocks: dollarQuotedBlocks)
         let length = lexer.units.count
         guard length > 0, length <= maximumLength else { return [] }
         var diagnostics: [SQLDiagnostic] = []
@@ -224,7 +226,7 @@ public enum SQLLinter {
             case .string, .quotedIdentifier:
                 guard lexer.isUnterminated(token) else { break }
                 quoteRunsToEnd = true
-                let quote = String(decoding: [lexer.units[start]], as: UTF16.self)
+                let quote = lexer.units[start] == 0x24 ? "$$" : String(decoding: [lexer.units[start]], as: UTF16.self)
                 let what = token.kind == .string ? "string" : "quoted identifier"
                 add(start..<(start + 1), scope: start..<length, .error, "Unterminated \(what): add the closing \(quote)")
             case .comment:
