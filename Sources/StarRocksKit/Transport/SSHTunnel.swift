@@ -169,6 +169,13 @@ public final class SSHTunnel: Sendable {
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=\(max(1, connectTimeout))",
             "-o", "NumberOfPasswordPrompts=1",
+            // Never share a connection with the user's ssh sessions (`ControlMaster` / `ControlPath` in ~/.ssh/config):
+            // - ControlMaster=no: this tunnel never becomes their master, so closing it never cuts their sessions;
+            // - ControlPath=none: it never attaches to their existing master either. Attached, the master would own the
+            //   forwarded port: it would stay open after `close()` (SIGTERM reaches only this client), keep forwarding
+            //   to the database, and bypass this profile's password or key. Affects only this ssh process.
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
             "-L", "127.0.0.1:\(localPort):\(remoteHost):\(remote.port)",
             "-p", String(configuration.port),
         ]
