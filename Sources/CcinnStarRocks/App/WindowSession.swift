@@ -34,6 +34,15 @@ final class WindowSession {
         }
     }
     private var connectTask: Task<Void, Never>?
+    /// Identifies the latest connect: progress and results of an older (cancelled) one are ignored.
+    private var connectGeneration = 0
+
+    typealias Opener = @Sendable (_ profile: ConnectionProfile, _ password: String, _ sshSecret: String?,
+                                  _ progress: @escaping @Sendable (String) -> Void) async throws -> StarRocksClient
+    /// Opens the client; replaced in tests.
+    var opener: Opener = { profile, password, sshSecret, progress in
+        try await ConnectionOpener.open(profile: profile, password: password, sshSecret: sshSecret, progress: progress)
+    }
 
     var workspace: WorkspaceModel? {
         if case let .connected(model) = phase { return model }
@@ -46,14 +55,20 @@ final class WindowSession {
         let name = profile.displayName
         let password = overridePassword ?? store.password(for: profile) ?? ""
         let sshSecret = profile.ssh.map { $0.authentication == .agent } == false ? store.sshSecret(for: profile) : nil
+        // A connect still in flight (double-click, a second Connect) would otherwise finish later and leave a live
+        // client behind, and its progress would overwrite this connect's status.
+        connectTask?.cancel()
+        connectGeneration += 1
+        let generation = connectGeneration
         phase = .connecting(name: name, status: "Connecting…")
-        let report: @Sendable (String) -> Void = { status in
-            Task { @MainActor in self.updateStatus(name: name, status: status) }
+        let report: @Sendable (String) -> Void = { [weak self] status in
+            Task { @MainActor in self?.updateStatus(generation: generation, name: name, status: status) }
         }
+        let opener = opener
         connectTask = Task {
             do {
-                let client = try await ConnectionOpener.open(profile: profile, password: password, sshSecret: sshSecret, progress: report)
-                if Task.isCancelled {
+                let client = try await opener(profile, password, sshSecret, report)
+                if Task.isCancelled || generation != self.connectGeneration {
                     await client.close()
                     return
                 }
@@ -64,7 +79,7 @@ final class WindowSession {
                 then?(workspace)
             } catch {
                 DebugLog.write("connect failed: \(error) cancelled=\(Task.isCancelled)")
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == self.connectGeneration else { return }
                 self.connectError = describe(error)
                 self.phase = .connections
             }
@@ -98,14 +113,15 @@ final class WindowSession {
     /// Connections handed to windows this process opens (see `WindowHandoff`).
     private static let handoff = WindowHandoff<WindowConnection>()
 
-    private func updateStatus(name: String, status: String) {
-        guard case .connecting = phase else { return }
+    private func updateStatus(generation: Int, name: String, status: String) {
+        guard generation == connectGeneration, case .connecting = phase else { return }
         phase = .connecting(name: name, status: status)
     }
 
     func cancelConnecting() {
         connectTask?.cancel()
         connectTask = nil
+        connectGeneration += 1
         phase = .connections
     }
 
@@ -114,6 +130,7 @@ final class WindowSession {
         // A connect still in flight would otherwise finish later and leave a live client/tunnel behind.
         connectTask?.cancel()
         connectTask = nil
+        connectGeneration += 1
         workspace?.shutdown()
         phase = .connections
     }
