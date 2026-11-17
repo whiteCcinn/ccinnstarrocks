@@ -5,6 +5,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-17
+
+### Added
+
+- **Format SQL** (⌥⌘L, toolbar button and Edit menu) formats the selection, or the whole script when nothing is selected, as one undoable edit:
+  - main clauses on their own lines and one item per line in multi-item SELECT / GROUP BY / ORDER BY / SET / VALUES lists;
+  - `AND` / `OR` conditions on their own lines in WHERE, HAVING and ON (not inside parentheses, CASE or BETWEEN);
+  - indented subqueries and CTEs, split multi-branch CASE expressions;
+  - StarRocks `CREATE TABLE` column lists and `PROPERTIES` one per line.
+
+  What changes:
+  - whitespace, but never between tokens the server could then read differently;
+  - the letter case of keywords StarRocks never accepts as names, and of words such as `END` or `DISTRIBUTED BY` only where the statement proves they are keywords.
+
+  Names, functions, strings, quoted identifiers, comments, optimizer hints and inline function bodies (`$$ … $$`) keep their exact text. The result is re-lexed and compared with the original before it replaces anything; when that cannot be proven, or the text changed meanwhile, nothing changes and the editor's status bar says why. A selection is widened to whole tokens and keeps the indentation of its first line. CRLF line endings stay CRLF. **Settings ▸ General** sets the keyword case (UPPER, lower or unchanged) and the indent (2 or 4 spaces).
+
+### Changed
+
+- **MCP:** `run_query`, `explain_query` and `execute_statement` refuse `$$` outside quotes and comments. StarRocks 4.1 reads `$$ … $$` as one block while 3.3 reads `$$` as part of a name, so where such a statement ends cannot be known.
+
+### Fixed
+
+- Starting a connection in a window, for example by double-clicking a saved connection twice, cancels a connection still in progress there instead of leaving it open in the background, and the status shown is always that of the newest connection.
+- SSH tunnels no longer join or become a connection-sharing master (`ControlMaster` in `~/.ssh/config`), so closing a window always closes its forward.
+- The read-only check of MCP `run_query` sees a keyword written right after a decimal number (`1.5into outfile …`) as StarRocks does, and refuses it.
+
 ## [1.2.0] - 2026-11-17
 
 ### Added

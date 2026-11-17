@@ -60,6 +60,7 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - `EXPLAIN` / `EXPLAIN COSTS`, and **real cancellation with `KILL QUERY`**.
   - Errors are underlined at their exact position, with the message next to the line. Unknown columns, tables and databases are found by name even when StarRocks reports no position. The marker follows your edits and disappears once you change the failing statement.
   - Unclosed quotes, comments and parentheses are flagged as you type.
+  - **Format SQL** (⌥⌘L) lays out the selection or the whole script: one clause per line, one list item per line, indented subqueries and CASE. It only changes whitespace and the case of keywords that can never be names; names, functions, strings and comments are untouched, and the result is checked token by token before it replaces your text. Undo with ⌘Z.
   - Searchable history.
   - CSV / TSV / `INSERT` export.
 - **Charts from any query**
@@ -78,7 +79,7 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - Task runs, schema-change jobs, and FE / BE / CN nodes with disk, CPU and memory usage.
   - **Configuration**: every variable and every FE and BE setting, with defaults. Values changed from the default and BE values that differ between nodes are marked. The view is read-only; **Edit in SQL Editor…** opens a pre-filled statement, and running it always asks for confirmation.
 - **Connectivity**
-  - **Multiple windows**, each with its own connection: File ▸ New Window (⌘N), **New Window with This Connection** (⇧⌘N, also the toolbar's New Window button), or **Open in New Window** on a saved connection.
+  - **Multiple windows**, each with its own connection: File ▸ New CcinnStarRocks Window (⌘N), **New Window with This Connection** (⇧⌘N, also the toolbar's New Window button), or **Open in New Window** on a saved connection.
   - Multiple catalogs (internal and external).
   - SSH tunnels through your system OpenSSH (agent, key or password).
   - LDAP users via an opt-in `mysql_clear_password`.
@@ -142,6 +143,7 @@ Useful shortcuts:
 | **⌘.** | Cancel the running statement |
 | **⌃Space** | Show completions |
 | **⌘/** | Comment or uncomment lines |
+| **⌥⌘L** | Format SQL (selection or whole script) |
 | **⌘T** | New query (each tab has its own session and runs independently) |
 | **⌘N** | New window (another cluster, or the same one) |
 | **⇧⌘N** | New window with this connection |
