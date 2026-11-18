@@ -77,7 +77,7 @@ public enum ResultExport {
     /// How each column is stored in a workbook: integers and decimals exactly (decimals with their scale), floating
     /// point as numbers, the rest as text.
     static func cellKinds(_ columns: [ColumnDefinition]) -> [XLSXWriter.CellKind] {
-        columns.map { column in
+        columns.map { (column: ColumnDefinition) -> XLSXWriter.CellKind in
             switch column.type.kind {
             case .integer: .integer
             case .decimal: .decimal(scale: Int(column.decimals))
@@ -189,9 +189,12 @@ public enum ResultExport {
     static func singleSourceTableParts(of sql: String) -> [String]? {
         let lexer = SQLLexer(sql)
         let tokens = lexer.tokens().filter { $0.kind != .comment }
-        let words = tokens.map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
+        let words: [String] = tokens.map { (token: SQLToken) -> String in token.kind == .keyword ? lexer.text(of: token).uppercased() : "" }
         guard words.first == "SELECT" else { return nil }
-        let isPunctuation = { (index: Int, text: String) in tokens[index].kind == .punctuation && lexer.text(of: tokens[index]) == text }
+        func isPunctuation(_ index: Int, _ text: String) -> Bool {
+            guard tokens[index].kind == .punctuation else { return false }
+            return lexer.text(of: tokens[index]) == text
+        }
         var depth = 0
         var from: Int?
         for index in tokens.indices {
@@ -207,9 +210,12 @@ public enum ResultExport {
             }
         }
         guard let from else { return nil }
-        let isName = { (index: Int) in
-            tokens[index].kind == .identifier || tokens[index].kind == .quotedIdentifier
-                || (tokens[index].kind == .keyword && !SQLKeywords.reserved.contains(words[index]))
+        func isName(_ index: Int) -> Bool {
+            switch tokens[index].kind {
+            case .identifier, .quotedIdentifier: return true
+            case .keyword: return !SQLKeywords.reserved.contains(words[index])
+            default: return false
+            }
         }
         var parts: [String] = []
         var index = from + 1
@@ -222,10 +228,12 @@ public enum ResultExport {
         guard (1...3).contains(parts.count) else { return nil }
         // An optional alias, then the end of the statement or the next clause: a comma means a second table.
         if index < tokens.count, words[index] == "AS" { index += 1 }
-        if index < tokens.count, isName(index), !["PARTITION", "PARTITIONS", "TEMPORARY", "TABLET"].contains(words[index]) { index += 1 }
+        let partitionWords: Set<String> = ["PARTITION", "PARTITIONS", "TEMPORARY", "TABLET"]
+        if index < tokens.count, isName(index), !partitionWords.contains(words[index]) { index += 1 }
         let following: Set<String> = ["WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "WINDOW", "QUALIFY", "PARTITION", "PARTITIONS",
                                       "TEMPORARY", "TABLET", "INTO", "FOR"]
-        guard index == tokens.count || isPunctuation(index, ";") || following.contains(words[index]) else { return nil }
+        if index == tokens.count || isPunctuation(index, ";") { return parts }
+        guard following.contains(words[index]) else { return nil }
         return parts
     }
 
@@ -263,7 +271,10 @@ public enum ResultExport {
         for row in rows {
             let values = tuple(row, columns: columns)
             let separatorBytes = 4 // ",\n  " or "\n  "
-            if rowsInStatement > 0, rowsInStatement >= rowsPerStatement || statementBytes + separatorBytes + values.utf8.count + 1 > maxStatementBytes {
+            let rowBytes: Int = separatorBytes + values.utf8.count
+            let isFull: Bool = rowsInStatement >= rowsPerStatement
+            let wouldOverflow: Bool = statementBytes + rowBytes + 1 > maxStatementBytes
+            if rowsInStatement > 0, isFull || wouldOverflow {
                 emit(";\n")
                 rowsInStatement = 0
             }
@@ -272,7 +283,7 @@ public enum ResultExport {
                 statementBytes = head.utf8.count
             }
             emit((rowsInStatement == 0 ? "\n  " : ",\n  ") + values)
-            statementBytes += separatorBytes + values.utf8.count
+            statementBytes += rowBytes
             rowsInStatement += 1
         }
         if rowsInStatement > 0 { emit(";") }
@@ -286,8 +297,8 @@ public enum ResultExport {
     private static func tuple(_ row: [String?], columns: [ColumnDefinition]) -> String {
         "(" + columns.indices.map { index -> String in
             guard index < row.count, let value = row[index] else { return "NULL" }
-            let isNumber = columns[index].type.isNumeric && TextValue.double(value).map(\.isFinite) == true
-            return isNumber ? value : SQLText.literal(value)
+            guard columns[index].type.isNumeric, let number = TextValue.double(value), number.isFinite else { return SQLText.literal(value) }
+            return value
         }.joined(separator: ", ") + ")"
     }
 

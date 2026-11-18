@@ -211,12 +211,8 @@ enum LaunchArguments {
                             for _ in 0..<100 where model.isRunning || model.outcomes.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
                             model.selectedOutcome?.viewMode = mode
                         }
-                        // Automated checks: `--export excel --export-to /path/result.xlsx` writes the result as Export does.
-                        if let raw = value("--export"), let format = ExportFormat(rawValue: raw), let path = value("--export-to") {
-                            for _ in 0..<600 where model.isRunning || model.outcomes.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
-                            if let outcome = model.selectedOutcome, let rowSet = outcome.rowSet {
-                                await model.write(rowSet, sql: outcome.executedSQL, as: format, to: URL(fileURLWithPath: path))
-                            }
+                        if let format = value("--export"), let path = value("--export-to") {
+                            await model.runAutomatedExport(format: format, to: path)
                         }
                     }
                 }

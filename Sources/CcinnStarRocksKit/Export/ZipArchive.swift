@@ -6,7 +6,7 @@ import Foundation
 
 /// CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320), the checksum ZIP stores per entry.
 public struct CRC32: Sendable {
-    private static let table: [UInt32] = (0..<256).map { index in
+    private static let table: [UInt32] = (0..<256).map { (index: Int) -> UInt32 in
         var value = UInt32(index)
         for _ in 0..<8 { value = value & 1 == 1 ? 0xEDB8_8320 ^ (value >> 1) : value >> 1 }
         return value
@@ -121,13 +121,25 @@ final class ZipArchiveWriter {
     init(url: URL, date: Date = Date()) throws {
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw ZipArchiveError.cannotCreate(url.path) }
         handle = try FileHandle(forWritingTo: url)
-        let parts = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        let year = min(max((parts.year ?? 1980) - 1980, 0), 127)
-        dosDate = UInt16(year << 9 | (parts.month ?? 1) << 5 | (parts.day ?? 1))
-        dosTime = UInt16((parts.hour ?? 0) << 11 | (parts.minute ?? 0) << 5 | (parts.second ?? 0) / 2)
+        (dosTime, dosDate) = Self.dosTimeAndDate(date)
     }
 
     deinit { try? handle.close() }
+
+    /// MS-DOS time (`hhhhhmmmmmmsssss`, seconds / 2) and date (`yyyyyyymmmmddddd`, years since 1980). Split into typed
+    /// steps: one mixed expression took Swift 6.2 too long to type-check.
+    static func dosTimeAndDate(_ date: Date) -> (time: UInt16, date: UInt16) {
+        let parts = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let year: Int = min(max((parts.year ?? 1980) - 1980, 0), 127)
+        let month: Int = parts.month ?? 1
+        let day: Int = parts.day ?? 1
+        let hour: Int = parts.hour ?? 0
+        let minute: Int = parts.minute ?? 0
+        let second: Int = parts.second ?? 0
+        let packedDate: Int = (year << 9) | (month << 5) | day
+        let packedTime: Int = (hour << 11) | (minute << 5) | (second / 2)
+        return (UInt16(truncatingIfNeeded: packedTime), UInt16(truncatingIfNeeded: packedDate))
+    }
 
     func addEntry(_ name: String, data: Data) throws {
         try addEntry(name) { write in try write(data) }

@@ -137,7 +137,8 @@ public enum XLSXWriter {
             let significant = digits.drop { $0 == 0x30 } // leading zeros of "0.000123" are not significant
             return significant.count <= 15
         case .approximateNumber:
-            return plainNumberDigits(value, allowExponent: true) != nil && Double(value).map(\.isFinite) == true
+            guard plainNumberDigits(value, allowExponent: true) != nil, let number = Double(value) else { return false }
+            return number.isFinite
         }
     }
 
@@ -198,13 +199,19 @@ public enum XLSXWriter {
             // A character reference survives XML's line-end normalisation and every reader decodes it; `_x000D_` is
             // decoded by Excel only.
             case "\r": text += "&#13;"
-            case _ where scalar.value < 0x20 || scalar.value == 0x7F || scalar.value == 0xFFFE || scalar.value == 0xFFFF:
+            case _ where needsEscape(scalar.value):
                 text += "_x" + String(format: "%04X", scalar.value) + "_"
             default: text.unicodeScalars.append(scalar)
             }
             index += 1
         }
         return (text, truncated)
+    }
+
+    /// Characters XML 1.0 cannot carry (C0 controls other than tab and LF), DEL, and the non-characters U+FFFE/U+FFFF.
+    private static func needsEscape(_ value: UInt32) -> Bool {
+        if value < 0x20 { return true }
+        return value == 0x7F || value == 0xFFFE || value == 0xFFFF
     }
 
     /// `_x` + four hex digits + `_` starting at `index`.
@@ -215,7 +222,7 @@ public enum XLSXWriter {
 
     /// Widths in characters from the header and the first 1,000 rows, between 6 and 60; wide (CJK) characters count twice.
     private static func columnWidths(header: [String], rows: [[String?]]) -> [Int] {
-        header.indices.map { index in
+        header.indices.map { (index: Int) -> Int in
             var widest = displayWidth(header[index])
             for row in rows.prefix(1_000) where index < row.count {
                 if let value = row[index] { widest = max(widest, displayWidth(value)) }
@@ -225,14 +232,18 @@ public enum XLSXWriter {
         }
     }
 
+    /// East Asian wide ranges (Hangul Jamo, CJK, Hangul, compatibility and full-width forms) and emoji from U+1F300.
+    private static let wideRanges: [ClosedRange<UInt32>] = [
+        0x1100...0x115F, 0x2E80...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6,
+        0x1_F300...0x10_FFFF,
+    ]
+
     private static func displayWidth(_ text: String) -> Int {
         var width = 0
         for scalar in text.unicodeScalars.prefix(80) {
-            let value = scalar.value
-            let wide = (0x1100...0x115F).contains(value) || (0x2E80...0xA4CF).contains(value) || (0xAC00...0xD7A3).contains(value)
-                || (0xF900...0xFAFF).contains(value) || (0xFE30...0xFE4F).contains(value) || (0xFF00...0xFF60).contains(value)
-                || (0xFFE0...0xFFE6).contains(value) || value >= 0x1_F300
-            width += wide ? 2 : 1
+            let value: UInt32 = scalar.value
+            let isWide: Bool = wideRanges.contains { $0.contains(value) }
+            width += isWide ? 2 : 1
         }
         return width
     }
@@ -304,7 +315,7 @@ public enum XLSXWriter {
 
         init(kinds: [CellKind]) {
             var scales: [Int] = []
-            columnStyles = kinds.map { kind in
+            columnStyles = kinds.map { (kind: CellKind) -> Int? in
                 switch kind {
                 case .integer, .decimal(scale: 0): return 2
                 case let .decimal(scale?) where (1...30).contains(scale):

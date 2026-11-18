@@ -558,6 +558,15 @@ final class SQLTabModel {
         }
     }
 
+    /// Automated checks (`--export excel --export-to /path/result.xlsx` with `--auto-run`): waits for the run, then
+    /// writes the selected result exactly as Export does.
+    func runAutomatedExport(format raw: String, to path: String) async {
+        guard let format = ExportFormat(rawValue: raw) else { return }
+        for _ in 0..<600 where isRunning || outcomes.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
+        guard let outcome = selectedOutcome, let rowSet = outcome.rowSet else { return }
+        await write(rowSet, sql: outcome.executedSQL, as: format, to: URL(fileURLWithPath: path))
+    }
+
     /// Copies the whole result as `format` (text formats only).
     func copy(_ result: ResultSet, sql: String, as format: ExportFormat) {
         guard format.isCopyable else { return }
@@ -575,8 +584,11 @@ final class SQLTabModel {
     /// The source table when every column comes from one, else the tab's title; safe as a file name.
     static func exportBaseName(_ result: ResultSet, sql: String?, fallback: String) -> String {
         let name = ResultExport.sourceTableName(columns: result.columns, sql: sql) ?? fallback
-        let cleaned = name.map { "/:\\".contains($0) || $0.isNewline ? "_" : $0 == " " ? "_" : $0 }
-        return cleaned.isEmpty ? "result" : String(cleaned)
+        let unsafe: Set<Character> = ["/", ":", "\\", " "]
+        let cleaned = String(name.map { (character: Character) -> Character in
+            unsafe.contains(character) || character.isNewline ? "_" : character
+        })
+        return cleaned.isEmpty ? "result" : cleaned
     }
 
     static func contentType(for format: ExportFormat) -> UTType {
