@@ -520,7 +520,7 @@ private struct TabletsSection: View {
     }
 }
 
-private struct TabletReport: View {
+struct TabletReport: View {
     let report: SkewReport
     let replicas: [TabletReplica]
     let distribution: Loadable<[ReplicaShare]>
@@ -595,19 +595,24 @@ private struct TabletReport: View {
                 Card(title: "Replicas per backend", systemImage: "server.rack") {
                     switch distribution {
                     case let .loaded(shares):
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(shares) { share in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack {
-                                        Text("BE \(share.backendID)").font(.callout.weight(.medium))
-                                        Spacer()
-                                        Text("\(share.replicaCount.formatted()) replicas").font(.caption).foregroundStyle(.secondary)
+                        // One row per BE, scrolled: a list as tall as the cluster made the tab, and with it the
+                        // window, taller than the screen once replicas spread over a few dozen BEs.
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(shares) { share in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text("BE \(share.backendID)").font(.callout.weight(.medium))
+                                            Spacer()
+                                            Text("\(share.replicaCount.formatted()) replicas").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        ProgressView(value: min(100, max(0, share.percent ?? 0)), total: 100)
+                                            .tint(Theme.accent)
                                     }
-                                    ProgressView(value: min(100, max(0, share.percent ?? 0)), total: 100)
-                                        .tint(Theme.accent)
                                 }
                             }
                         }
+                        .frame(maxHeight: .infinity, alignment: .top)
                     case let .failed(message):
                         Text("Unavailable: \(message)").font(.caption).foregroundStyle(.secondary)
                     default:
@@ -615,7 +620,9 @@ private struct TabletReport: View {
                     }
                 }
                 .frame(width: 260)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
+            .frame(maxHeight: .infinity)
         }
     }
 }
