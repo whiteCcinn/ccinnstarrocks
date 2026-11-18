@@ -112,7 +112,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.0.1...v1.1.0
