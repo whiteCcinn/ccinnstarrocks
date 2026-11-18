@@ -17,6 +17,27 @@ struct ClusterSettingChangeTests {
         #expect(ClusterSettingChange.of(sql) == .globalVariable)
     }
 
+    /// 1.3.2: the server reads `@@`, `global`, `.` and the name as separate tokens, with free whitespace and comments
+    /// between them; the lexer reads `@@global.x` as one variable but `@@global .x` as `@@global` and `.x`.
+    static let spacedGlobals = [
+        "SET @@global .query_timeout = 301",
+        "SET @@global/*c*/.query_timeout = 301",
+        "SET @@global\n.query_timeout = 301",
+        "SET query_mem_limit = 0, @@global .query_timeout = 301",
+        "SET @@`global`.query_timeout = 301",
+        "SET @@GLOBAL . query_timeout = 301",
+        "SET @@ global.query_timeout = 301",
+    ]
+
+    @Test(arguments: spacedGlobals)
+    func globalVariablesAcrossWhitespaceAndComments(sql: String) throws {
+        #expect(ClusterSettingChange.of(sql) == .globalVariable, "\(sql.debugDescription)")
+        #expect(throws: MCPToolError.self) { try StarRocksMCPTools.executableStatement(sql) }
+        let confirmation = try #require(RunConfirmation.required(for: [sql], confirmMutations: false))
+        #expect(confirmation.changesSettings)
+        #expect(RunConfirmation.required(for: [sql], confirmMutations: true)?.changesSettings == true)
+    }
+
     @Test(arguments: [
         "ADMIN SET FRONTEND CONFIG ('label_keep_max_num' = '1000')",
         "admin set all frontends config ('a' = '1')",
@@ -37,6 +58,9 @@ struct ClusterSettingChangeTests {
     @Test(arguments: [
         "SET query_timeout = 300",
         "SET @@session.query_timeout = 300",
+        "SET @@session .query_timeout = 300",
+        "SET @@local/*c*/.query_timeout = 300",
+        "SET @@global_x = 1",
         "SET @@query_timeout = 300",
         "SET x = 'GLOBAL'",
         "SET global_flag = 1",

@@ -18,6 +18,16 @@ public enum ClusterSettingChange: String, Sendable, Equatable, CaseIterable {
         }
     }
 
+    /// The scope word of a system variable token: `@@global.x`, `@@global` (the server reads `@@`, `global`, `.` and the
+    /// name as separate tokens, so `@@global .x` and `@@global/*c*/.x` reach the lexer as `@@global` and `.x`) and
+    /// `` @@`global`.x `` give "global"; `@@x` and `@@global_x` give `nil`.
+    static func systemVariableScope(_ token: String) -> String? {
+        guard token.hasPrefix("@@") else { return nil }
+        let name = token.dropFirst(2).replacingOccurrences(of: "`", with: "").lowercased()
+        let scope = name.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        return ["global", "session", "local"].contains(scope) ? scope : nil
+    }
+
     /// The kind of setting `statement` changes, or `nil`. Token-based, so strings and comments never match; when
     /// in doubt it errs towards asking (a column named `be_configs` in an UPDATE also counts).
     public static func of(_ statement: String) -> ClusterSettingChange? {
@@ -36,7 +46,7 @@ public enum ClusterSettingChange: String, Sendable, Equatable, CaseIterable {
             // A scope applies per assignment: `SET a = 1, GLOBAL b = 2` changes b globally.
             for (index, token) in tokens.enumerated().dropFirst() {
                 if (token.kind == .keyword || token.kind == .identifier), words[index] == "GLOBAL" { return .globalVariable }
-                if token.kind == .variable, lexer.text(of: token).lowercased().hasPrefix("@@global.") { return .globalVariable }
+                if token.kind == .variable, systemVariableScope(lexer.text(of: token)) == "global" { return .globalVariable }
             }
             return nil
         case "ADMIN":

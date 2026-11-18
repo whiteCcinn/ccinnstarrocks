@@ -396,6 +396,31 @@ struct StarRocksIntegrationTests {
         _ = try await client.execute("DROP FUNCTION shop.\(name)(INT)")
     }
 
+    /// 1.3.2: each spaced spelling really assigns the global variable on the server, and is detected as such. The value
+    /// written is the current one, so the cluster is unchanged.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func spacedGlobalAssignmentsAreGlobalAndDetected(target: IntegrationEnvironment.Target) async throws {
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        let current = try #require(try await client.execute("SELECT @@global.query_timeout").rows.first?.first ?? nil)
+        for template in ["SET @@global .query_timeout = %@", "SET @@global/*c*/.query_timeout = %@", "SET @@global\n.query_timeout = %@",
+                         "SET query_mem_limit = 0, @@global .query_timeout = %@"] {
+            let sql = template.replacingOccurrences(of: "%@", with: current)
+            #expect(ClusterSettingChange.of(sql) == .globalVariable, "\(sql.debugDescription)")
+            let session = client.openSession()
+            _ = try await session.run(sql)
+            await session.close()
+        }
+        // A global assignment is visible from a new session; a session one would not be.
+        let probe = String(Int(current).map { $0 + 1 } ?? 301)
+        let session = client.openSession()
+        _ = try await session.run("SET @@global .query_timeout = \(probe)")
+        await session.close()
+        let seen = try await client.execute("SELECT @@global.query_timeout").rows.first?.first ?? nil
+        _ = try await client.execute("SET GLOBAL query_timeout = \(current)")
+        #expect(seen == probe, "`SET @@global .x` changes the global value")
+    }
+
     private enum Outcome: Equatable {
         case rows(columns: [String], rows: [[String?]])
         case rejected

@@ -205,6 +205,12 @@ struct SessionRegressionTests {
         #expect(SessionContextChange.parse("SET GLOBAL query_timeout = 10") == nil)
         #expect(SessionContextChange.parse("SET PASSWORD = PASSWORD('x')") == nil)
         #expect(SessionContextChange.parse("set @@global.x = 1") == nil)
+        // 1.3.2: global assignments are never replayed after a reconnect, however they are spelled.
+        for global in ["SET @@global .query_timeout = 301", "SET @@global/*c*/.query_timeout = 301", "SET @@global\n.query_timeout = 301",
+                       "SET query_mem_limit = 0, @@global .query_timeout = 301", "SET a = 1, GLOBAL b = 2", "SET @@`global`.x = 1",
+                       "SET /* c */ GLOBAL x = 1"] {
+            #expect(SessionContextChange.parse(global) == nil, "\(global.debugDescription)")
+        }
     }
 }
 

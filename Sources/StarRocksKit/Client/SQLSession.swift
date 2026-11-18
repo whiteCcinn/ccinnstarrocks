@@ -148,11 +148,13 @@ public enum SessionContextChange: Equatable, Sendable {
             return parts.count == 1 ? .setCatalog(parts[0]) : nil
         }
         if lowered.hasPrefix("set ") {
-            // Global and account-level settings persist on the server and must not be replayed.
-            let words = lowered.split(whereSeparator: \.isWhitespace)
+            // Global and account-level settings persist on the server and must not be replayed. The server reads `@@`,
+            // `global`, `.` and the name as separate tokens (`SET @@global /*c*/ .x = 1`, `SET a = 1, GLOBAL b = 2`), so
+            // any word `global` anywhere excludes the statement; not replaying a session setting is the safe mistake.
+            let words = lowered.split { !($0.isLetter || $0.isNumber || $0 == "_") }
             let second = words.count > 1 ? String(words[1]) : ""
             let excluded = ["global", "password", "default", "property", "transaction"]
-            if excluded.contains(second) || lowered.contains("@@global.") { return nil }
+            if excluded.contains(second) || words.contains("global") { return nil }
             return .sessionVariable(text)
         }
         return nil
