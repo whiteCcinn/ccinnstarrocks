@@ -294,3 +294,52 @@ struct DollarQuoteSecurityTests {
         #expect(SQLStatementSplitter.split("SELECT 1.5;SELECT 2").count == 2)
     }
 }
+
+/// 1.3.1: StarRocks (3.3 and 4.1, raw COM_QUERY) drops `#`, `\\`, C0 controls, DEL and supplementary code points instead
+/// of treating `#` as a comment or emoji as part of a name. Up to 1.3.0 the lexer hid what followed `#` and glued
+/// supplementary characters into names, so read-only checks and confirmations missed a second statement or an export.
+@Suite("Characters StarRocks drops")
+struct DroppedCharacterSecurityTests {
+    static let hidden = [
+        "SELECT 1 # ; CREATE DATABASE ccinn_hash_rv -- ",
+        "SELECT 1 # INTO OUTFILE 's3://bucket/ccinn/' -- ",
+        "SELECT 1 # ; ADMIN SET FRONTEND CONFIG (\"enable_udf\" = \"true\")",
+        "SELECT 1 LIMIT 1\u{E0020}INTO\u{E0020}OUTFILE\u{E0020}'nosuchscheme://ccinn/'",
+    ]
+
+    @Test(arguments: hidden)
+    func runQueryRejects(sql: String) {
+        #expect(ReadOnlySQLGuard.check(sql) != nil, "\(sql.debugDescription)")
+        #expect(ReadOnlySQLGuard.ambiguityRejection(sql) != nil, "\(sql.debugDescription)")
+    }
+
+    @Test(arguments: hidden)
+    func executeStatementRejects(sql: String) {
+        #expect(throws: MCPToolError.self) { try StarRocksMCPTools.executableStatement(sql) }
+    }
+
+    @Test(arguments: hidden)
+    func theFormatterRefuses(sql: String) {
+        #expect(SQLFormatter.format(sql) == nil, "\(sql.debugDescription)")
+    }
+
+    @Test func splittingAndConfirmationsSeeWhatTheServerRuns() throws {
+        #expect(SQLStatementSplitter.split(Self.hidden[0]).map(\.text) == ["SELECT 1", "CREATE DATABASE ccinn_hash_rv -- "])
+        let statements = SQLStatementSplitter.split(Self.hidden[2]).map(\.text)
+        #expect(statements.count == 2)
+        #expect(ClusterSettingChange.of(statements[1]) != nil)
+        let confirmation = try #require(RunConfirmation.required(for: statements, confirmMutations: false))
+        #expect(confirmation.changesSettings)
+        let mutation = try #require(RunConfirmation.required(for: SQLStatementSplitter.split(Self.hidden[0]).map(\.text), confirmMutations: true))
+        #expect(!mutation.changesSettings)
+        // A leading dropped character does not disguise the statement's kind.
+        #expect(SQLStatementKind.of("# DROP TABLE t") == SQLStatementKind.of("DROP TABLE t"))
+        #expect(ClusterSettingChange.of("😀ADMIN SET FRONTEND CONFIG ('a' = 'b')") != nil)
+    }
+
+    @Test(arguments: ["SELECT '#' AS a", "SELECT `#😀` FROM t", "SELECT 1 -- # 😀", "SELECT 1 /* # */", "SELECT '\\N'"])
+    func droppedCharactersInsideLiteralsAreFine(sql: String) throws {
+        #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql)")
+        #expect(try StarRocksMCPTools.executableStatement(sql) == sql)
+    }
+}

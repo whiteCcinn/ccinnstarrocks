@@ -75,13 +75,11 @@ public struct SQLLexer: Sendable {
             let unit = units[index]
             let start = index
             switch unit {
-            case 0x20, 0x09, 0x0A, 0x0D, 0x0B, 0x0C:
+            case _ where Self.isDropped(unit):
+                // Whitespace, and characters StarRocks drops: they separate tokens and hide nothing (`#` is no comment).
                 index += 1
                 continue
             case 0x2D where peek(index + 1) == 0x2D: // --
-                index = endOfLine(from: index)
-                tokens.append(SQLToken(kind: .comment, range: start..<index))
-            case 0x23: // # (MySQL line comment)
                 index = endOfLine(from: index)
                 tokens.append(SQLToken(kind: .comment, range: start..<index))
             case 0x2F where peek(index + 1) == 0x2A: // /*
@@ -234,7 +232,37 @@ public struct SQLLexer: Sendable {
     static func isDigit(_ unit: UInt16) -> Bool { unit >= 0x30 && unit <= 0x39 }
 
     static func isIdentifierStart(_ unit: UInt16) -> Bool {
-        (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A) || unit == 0x5F || unit == 0x24 || unit >= 0x80
+        (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A) || unit == 0x5F || unit == 0x24
+            || (unit >= 0x80 && !isSurrogate(unit))
+    }
+
+    static func isSurrogate(_ unit: UInt16) -> Bool { unit >= 0xD800 && unit <= 0xDFFF }
+
+    /// Characters StarRocks 3.3 and 4.1 drop outside strings, quoted names and comments: every C0 control (whitespace
+    /// included), space, `#`, `\`, DEL and every code point above U+FFFF (a UTF-16 surrogate pair). No token rule
+    /// matches them, so they separate tokens and hide nothing. `#` is not a comment over COM_QUERY (the mysql CLI strips
+    /// `#` comments itself, which is why it looks like one). Pinned for every code point by the lexer-versus-server
+    /// integration test.
+    public static func isDropped(_ unit: UInt16) -> Bool {
+        unit <= 0x20 || unit == 0x23 || unit == 0x5C || unit == 0x7F || isSurrogate(unit)
+    }
+
+    /// Plain layout whitespace: space, tab and line breaks. The other dropped characters are not.
+    public static func isLayoutWhitespace(_ unit: UInt16) -> Bool {
+        unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D || unit == 0x0B || unit == 0x0C
+    }
+
+    /// Whether a dropped character other than layout whitespace (`#`, `\`, a control character, an emoji, …) stands
+    /// outside the tokens. Such text is valid for the server, but a reader (or an older lexer) easily misreads it: the
+    /// read-only guard and the formatter refuse it.
+    public func containsDroppedCharacters(_ tokens: [SQLToken]) -> Bool {
+        var gapStart = 0
+        for index in 0...tokens.count {
+            let gapEnd = index < tokens.count ? tokens[index].range.lowerBound : units.count
+            if gapStart < gapEnd, units[gapStart..<gapEnd].contains(where: { !Self.isLayoutWhitespace($0) }) { return true }
+            if index < tokens.count { gapStart = max(gapStart, tokens[index].range.upperBound) }
+        }
+        return false
     }
 
     static func isIdentifierPart(_ unit: UInt16) -> Bool {

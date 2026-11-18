@@ -17,7 +17,13 @@ public enum ReadOnlySQLGuard {
     /// 3.3 lexes the text) is refused; `LIKE '%$$%'` or `-- costs $$` are fine.
     public static func ambiguityRejection(_ sql: String) -> String? {
         let lexer = SQLLexer(sql) // `$$` blocks off: what StarRocks 3.3 reads
-        let ambiguous = lexer.tokens().contains { token in
+        let tokens = lexer.tokens()
+        // `#`, `\`, control characters and characters above U+FFFF (emoji, invisible tag characters) are dropped by the
+        // server: `SELECT 1 # ; DROP …` runs two statements. Readers (and lexers up to 1.3.0) take `#` for a comment.
+        if lexer.containsDroppedCharacters(tokens) {
+            return "Statements with #, \\, control characters or characters such as emoji outside quotes and comments are not allowed here: StarRocks ignores them (# is not a comment), so the statement may not be what it looks like."
+        }
+        let ambiguous = tokens.contains { token in
             token.kind != .string && token.kind != .comment && token.kind != .quotedIdentifier
                 && SQLFormatter.containsDollarPair(lexer.units[token.range])
         }

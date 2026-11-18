@@ -19,9 +19,28 @@ struct SQLLexerTests {
     }
 
     @Test func handlesCommentsStringsAndUnicode() {
-        let tokens = kinds("/* multi\nline */ select '吉隆坡\\'' # hash comment\n x")
+        let tokens = kinds("/* multi\nline */ select '吉隆坡\\'' -- comment\n x")
         #expect(tokens.map(\.0) == [.comment, .keyword, .string, .comment, .identifier])
         #expect(tokens[2].1 == "'吉隆坡\\''")
+    }
+
+    /// StarRocks 3.3 and 4.1 (over raw COM_QUERY) drop characters no token rule matches: every C0 control, `#`, `\`,
+    /// DEL and every code point above U+FFFF. They separate tokens and hide nothing, so `#` is not a comment and
+    /// `a😀b` is two names. Checked for every code point by the lexer-versus-server integration test.
+    @Test func charactersTheServerDropsSeparateTokens() {
+        #expect(kinds("SELECT 1 # ; CREATE DATABASE x -- ").map(\.1) == ["SELECT", "1", ";", "CREATE", "DATABASE", "x", "-- "])
+        for separator in ["#", "\\", "\u{0}", "\u{1}", "\u{1F}", "\u{7F}", "😀", "\u{E0020}", "\u{10000}", "\u{10FFFF}", "##"] {
+            #expect(kinds("a\(separator)b").map(\.1) == ["a", "b"], "\(separator.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+        #expect(kinds("SELECT 2 😀+ 1").map(\.1) == ["SELECT", "2", "+", "1"])
+        #expect(kinds("SELECT 1\u{E0020}INTO\u{E0020}OUTFILE").map(\.1) == ["SELECT", "1", "INTO", "OUTFILE"])
+        #expect(kinds("\\N").map(\.1) == ["N"], "the server reads \\N as the name N")
+        // Not dropped: these are part of a name for the server too.
+        for namePart in ["\u{A0}", "\u{85}", "\u{AD}", "\u{200B}", "\u{2028}", "\u{3000}", "\u{FEFF}", "\u{FFFF}", "吉"] {
+            #expect(kinds("a\(namePart)b").count == 1, "\(namePart.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+        // Inside strings, quoted names and comments they are only text.
+        #expect(kinds("'#😀' `#😀` -- #😀\n/* # */").map(\.0) == [.string, .quotedIdentifier, .comment, .comment])
     }
 
     @Test func unterminatedConstructsExtendToEnd() {

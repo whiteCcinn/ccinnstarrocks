@@ -316,9 +316,15 @@ struct LinterTests {
         #expect(lint("SELECT 1 /*/").map(\.0) == [.error])
     }
 
-    @Test(arguments: ["SELECT 'it''s', \"a\\\"b\", (1), `x``y` FROM t", "SELECT 1 -- (", "/**/ SELECT (1)", "SELECT ')' FROM t", "", "SELECT 1 # )"])
+    @Test(arguments: ["SELECT 'it''s', \"a\\\"b\", (1), `x``y` FROM t", "SELECT 1 -- (", "/**/ SELECT (1)", "SELECT ')' FROM t", "", "SELECT 1 -- # )"])
     func cleanTextHasNoDiagnostics(text: String) {
         #expect(SQLLinter.diagnose(text).isEmpty)
+    }
+
+    /// 1.3.1: `#` is no comment for StarRocks (it parses `SELECT 1 )`), so what follows it is checked.
+    @Test func hashIsNotAComment() {
+        #expect(lint("SELECT 1 # )").map(\.1) == [")"])
+        #expect(lint("SELECT 1 # (").map(\.1) == ["("])
     }
 
     @Test func diagnosticsAreCapped() {

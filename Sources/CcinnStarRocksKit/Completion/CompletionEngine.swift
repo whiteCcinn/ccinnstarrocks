@@ -80,7 +80,7 @@ public enum CompletionEngine {
             return .empty(at: cursor)
         }
         if let ending = tokens.last(where: { $0.range.upperBound == cursor }) {
-            if ending.kind == .comment, lexer.text(of: ending).hasPrefix("--") || lexer.text(of: ending).hasPrefix("#") {
+            if ending.kind == .comment, lexer.text(of: ending).hasPrefix("--") {
                 return .empty(at: cursor)
             }
             if ending.kind == .string, !isTerminated(ending, lexer: lexer) { return .empty(at: cursor) }

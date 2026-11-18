@@ -309,15 +309,15 @@ struct SQLFormatterTests {
     @Test func touchingTokensStayTouching() {
         #expect(format("select 0xabc_flag from t") == "SELECT 0xabc_flag\nFROM t")
         #expect(format("select 0xzz, 0x1F from t") == "SELECT\n  0xzz,\n  0x1F\nFROM t")
-        #expect(format(#"select x'0F', N'abc', _utf8'a', \N, t.1abc from t"#) == #"""
+        #expect(format("select x'0F', N'abc', _utf8'a', t.1abc from t") == """
             SELECT
               x'0F',
               N'abc',
               _utf8'a',
-              \N,
               t.1abc
             FROM t
-            """#)
+            """)
+        #expect(format(#"select \N from t"#) == nil, "the server drops the backslash: refused, not rewritten")
         #expect(format("select a::int, b :: int from t") == "SELECT\n  a::INT,\n  b :: INT\nFROM t")
         let colons = format("select a :: :int")
         #expect(colons == "SELECT a :: :INT")
@@ -625,7 +625,8 @@ struct SQLFormatterTests {
         #expect(format("select [1,2,3], map{1:2,3:4} from t") == "SELECT\n  [1, 2, 3],\n  map{1:2, 3:4}\nFROM t")
         #expect(format("select unnest([1]), arr [1] from t") == "SELECT\n  unnest([1]),\n  arr[1]\nFROM t")
         #expect(format("SELECT [1]") == "SELECT [1]")
-        #expect(format("select 1 # c\n, 2") == "SELECT\n  1 # c\n  , 2")
+        #expect(format("select 1 -- c\n, 2") == "SELECT\n  1 -- c\n  , 2")
+        #expect(format("select 1 # c\n, 2") == nil, "`#` is not a comment on StarRocks: refused")
         #expect(format("select a /* x */ -- y\n, b from t") == "SELECT\n  a /* x */ -- y\n  , b\nFROM t")
         #expect(format("create view v as select 1") == "CREATE view v AS\nSELECT 1")
         #expect(format("explain verbose select 1") == "EXPLAIN verbose SELECT 1")
@@ -739,6 +740,18 @@ struct SQLFormatterTests {
         }
         #expect(found == [0x131, 0x17F])
         #expect(SQLFormatter.lettersUpperCasingToASCII == Set(found))
+    }
+
+    /// 1.3.1: StarRocks drops `#`, `\\`, C0 controls, DEL and supplementary code points. The formatter would drop them
+    /// too (they lex as whitespace), so it refuses instead of silently rewriting what the user wrote; and a hidden END
+    /// must never be recased into a different statement.
+    @Test func charactersTheServerDropsAreRefused() {
+        #expect(format("with `end` as (select 5 a), `END` as (select 6 a) select case when 1=1 then 1 # end\n x, a from (select 0 z) t1, end") == nil)
+        #expect(format("with `end` as (select 5 a), `END` as (select 6 a) select case when 1=1 then 1 \u{E0020}end x, a from (select 0 z) t1, end") == nil)
+        for text in ["select 1 #", "select \\N", "select 1\u{0}", "select 2 😀+ 1", "select 1\u{7F}"] {
+            #expect(format(text) == nil, "\(text.debugDescription)")
+        }
+        #expect(format("select '#😀\\' a, `😀` -- 😀 #") == "SELECT '#😀\\' a, `😀` -- 😀 #", "inside literals and comments they are text")
     }
 
     @Test func trailingSpacesOfLineCommentsAreKept() {

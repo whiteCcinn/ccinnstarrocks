@@ -208,6 +208,8 @@ public enum SQLFormatter {
     ///   any `$$` outside strings and comments, which StarRocks 4.1 would read as the start of a block.
     static func mustRefuse(_ lexer: SQLLexer, _ tokens: [SQLToken]) -> Bool {
         if splitsAWord(lexer, tokens) { return true }
+        // `#`, `\`, control characters and characters above U+FFFF: the server drops them, so the formatter would too.
+        if lexer.containsDroppedCharacters(tokens) { return true }
         for token in tokens {
             switch token.kind {
             case .string where lexer.units[token.range.lowerBound] == 0x24: // a `$$` block (blocks on)
@@ -659,7 +661,7 @@ extension SQLFormatter {
         }
 
         private func isLineComment(_ index: Int) -> Bool {
-            tokens[index].kind == .comment && lexer.units[tokens[index].range.lowerBound] != 0x2F // `--`, `#`; not `/*`
+            tokens[index].kind == .comment && lexer.units[tokens[index].range.lowerBound] != 0x2F // `--`; not `/*`
         }
 
         private var continuationIndent: Int {

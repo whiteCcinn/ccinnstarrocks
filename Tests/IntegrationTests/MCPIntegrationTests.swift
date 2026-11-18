@@ -87,6 +87,43 @@ struct MCPDollarQuoteTests {
     }
 }
 
+/// 1.3.1: `#` is not a comment for StarRocks over COM_QUERY and characters above U+FFFF are dropped, so up to 1.3.0 they
+/// hid a second statement or an export from read-only mode. Every such text is refused, and nothing hidden runs.
+@Suite("MCP and characters StarRocks drops", .serialized)
+struct MCPDroppedCharacterTests {
+    @Test(arguments: IntegrationEnvironment.targets)
+    func hiddenStatementsAreRefused(target: IntegrationEnvironment.Target) async throws {
+        let process = try MCPProcess(target: target)
+        defer { process.terminate() }
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        try process.send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        let hidden = [
+            "SELECT 1 # ; CREATE DATABASE ccinn_hash_rv -- ",
+            "SELECT 1 # INTO OUTFILE 'nosuchscheme://ccinn/' -- ",
+            "SELECT 1 # ; ADMIN SET FRONTEND CONFIG (\"enable_udf\" = \"true\")",
+            "SELECT 1 LIMIT 1\u{E0020}INTO\u{E0020}OUTFILE\u{E0020}'nosuchscheme://ccinn/'",
+        ]
+        var id: Int64 = 10
+        for sql in hidden {
+            for tool in ["run_query", "explain_query"] {
+                id += 1
+                let response = try await process.request(["jsonrpc": "2.0", "id": .int(id), "method": "tools/call",
+                                                          "params": ["name": .string(tool), "arguments": ["sql": .string(sql)]]])
+                #expect(response["result"]?["isError"] == .bool(true), "\(tool): \(sql.debugDescription)")
+            }
+        }
+        let client = try await IntegrationEnvironment.client(target)
+        defer { Task { await client.close() } }
+        #expect(!(try await client.databases()).contains("ccinn_hash_rv"), "the hidden CREATE DATABASE never ran")
+        // The server really runs what follows `#`: the guard's refusal is not hypothetical.
+        let session = client.openSession()
+        let results = try await session.run("SELECT 1 AS a # ; SELECT 2 AS b")
+        #expect(results.count == 2)
+        await session.close()
+    }
+}
+
 /// A running MCP server subprocess with a temporary profile directory.
 final class MCPProcess: @unchecked Sendable {
     static var binary: URL {
