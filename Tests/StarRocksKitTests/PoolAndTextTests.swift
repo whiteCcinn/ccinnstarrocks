@@ -85,7 +85,78 @@ struct TextHelperTests {
     @Test func quotesIdentifiersAndLiterals() {
         #expect(SQLText.quoteIdentifier("a`b") == "`a``b`")
         #expect(SQLText.qualified("default_catalog", "shop", nil, "orders") == "`default_catalog`.`shop`.`orders`")
-        #expect(SQLText.literal("it's \\ ok") == "'it\\'s \\\\ ok'")
+        #expect(SQLText.literal("it's \\ ok") == "'it''s \\\\ ok'")
+    }
+
+    /// 1.3.2 review: with `sql_dialect = trino` (the account's or the cluster's) a `\'` escape ends the string, so a quote
+    /// in a name from the AI or from server metadata broke out of the app's own statements. A doubled quote ends nothing
+    /// in either dialect; backslash escapes read as two characters under trino (a wrong value at worst, never a way out).
+    /// NUL never goes out raw (and names holding one are refused before this: on connect and by the AI tools).
+    @Test(arguments: [
+        ("x'", "'x'''"), ("x\\", "'x\\\\'"), ("\\'", "'\\\\'''"),
+        ("x\\' UNION SELECT 'i' --", "'x\\\\'' UNION SELECT ''i'' --'"),
+        ("a\0b", "'a\\0b'"), ("line\nbreak\r\u{1A}", "'line\\nbreak\\r\\Z'"), ("plain", "'plain'"),
+    ])
+    func literalsAreSafeInBothDialects(value: String, expected: String) {
+        let literal = SQLText.literal(value)
+        #expect(literal == expected)
+        #expect(!literal.contains("\0"), "never a raw NUL")
+        #expect(Self.trinoStringEnd(literal) == literal.utf16.count, "trino reads one string: \(literal)")
+        #expect(Self.starRocksStringEnd(literal) == literal.utf16.count, "StarRocks reads one string: \(literal)")
+    }
+
+    /// Every value, however it mixes quotes, backslashes and control characters, is one string in both dialects.
+    @Test func noValueBreaksOutOfALiteral() {
+        let pieces: [String] = ["'", "\\", "''", "\\'", "x", " ", "\0", "\n", "\r", "\u{1A}", "\"", "--", "吉"]
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<5_000 {
+            let count = Int.random(in: 0...12, using: &generator)
+            let value: String = (0..<count).map { _ in pieces.randomElement(using: &generator) ?? "" }.joined()
+            let literal = SQLText.literal(value)
+            #expect(Self.trinoStringEnd(literal) == literal.utf16.count, "\(value.debugDescription) → \(literal)")
+            #expect(Self.starRocksStringEnd(literal) == literal.utf16.count, "\(value.debugDescription) → \(literal)")
+        }
+    }
+
+    /// Where the string literal starting `text` ends (UTF-16 offset after its closing quote) when only a doubled quote
+    /// escapes, as in trino; `nil` when unterminated.
+    static func trinoStringEnd(_ text: String) -> Int? {
+        let units = Array(text.utf16)
+        guard units.first == 0x27 else { return nil }
+        var index = 1
+        while index < units.count {
+            if units[index] == 0x27 {
+                if index + 1 < units.count, units[index + 1] == 0x27 {
+                    index += 2
+                    continue
+                }
+                return index + 1
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// The same with MySQL escapes as well (a backslash escapes the next character), as StarRocks reads strings.
+    static func starRocksStringEnd(_ text: String) -> Int? {
+        let units = Array(text.utf16)
+        guard units.first == 0x27 else { return nil }
+        var index = 1
+        while index < units.count {
+            if units[index] == 0x5C {
+                index += 2
+                continue
+            }
+            if units[index] == 0x27 {
+                if index + 1 < units.count, units[index + 1] == 0x27 {
+                    index += 2
+                    continue
+                }
+                return index + 1
+            }
+            index += 1
+        }
+        return nil
     }
 
     @Test func recognisesContextChanges() {

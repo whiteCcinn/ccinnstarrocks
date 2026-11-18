@@ -140,7 +140,7 @@ struct ConfigStatementTests {
         #expect(ConfigStatement.edit(for: ConfigItem(scope: .variables, name: "enable_profile", value: "false"))?.hasSuffix("SET GLOBAL enable_profile = false;") == true)
         #expect(ConfigStatement.edit(for: ConfigItem(scope: .variables, name: "time_zone", value: "Asia/Kuala_Lumpur"))?
             .hasSuffix("SET GLOBAL time_zone = 'Asia/Kuala_Lumpur';") == true)
-        #expect(ConfigStatement.edit(for: ConfigItem(scope: .variables, name: "sql_mode", value: "it's"))?.hasSuffix(#"SET GLOBAL sql_mode = 'it\'s';"#) == true)
+        #expect(ConfigStatement.edit(for: ConfigItem(scope: .variables, name: "sql_mode", value: "it's"))?.hasSuffix("SET GLOBAL sql_mode = 'it''s';") == true)
     }
 
     @Test func frontendAndBackendStatements() {

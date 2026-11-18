@@ -169,7 +169,7 @@ struct ExportSkewHistoryTests {
         let columns = [column("id", .longLong), column("city", .varString)]
         let rows: [[String?]] = [["1", "Kuala\tLumpur"], ["2", nil]]
         #expect(ResultExport.tsv(columns: columns, rows: rows) == "id\tcity\n1\tKuala Lumpur\n2\t")
-        #expect(ResultExport.insertStatements(table: "`t`", columns: columns, rows: [["1", "O'Neil"]]) == "INSERT INTO `t` (`id`, `city`) VALUES (1, 'O\\'Neil');")
+        #expect(ResultExport.insertStatements(table: "`t`", columns: columns, rows: [["1", "O'Neil"]]) == "INSERT INTO `t` (`id`, `city`) VALUES (1, 'O''Neil');")
     }
 
     @Test func detectsSkewedTablets() {

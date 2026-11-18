@@ -175,10 +175,14 @@ public struct StarRocksMCPTools: MCPToolProvider {
     }
 
     private func dispatch(_ name: String, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
+        if let key = args.controlCharacterArgument() {
+            throw MCPToolError("`\(key)` contains a control character. Names are sent to the server as given, so they must be plain text.")
+        }
         if name == "list_connections" { return listConnections() }
         let resolved = try resolver.resolve(args.string("connection"))
         context.connection = resolved.profile.displayName
         let client = try await registry.client(for: resolved.profile)
+        if let refusal = Self.dialectRefusal(client.configuration) { throw MCPToolError(refusal) }
         if resolved.access == .readOnly, !resolved.profile.mcpAllowPrivilegedAccount {
             try await refusePrivilegedAccount(client, resolved.profile)
         }
@@ -204,14 +208,14 @@ public struct StarRocksMCPTools: MCPToolProvider {
         case "list_cluster_nodes":
             return ["nodes": .array(try await client.nodes().map(Self.encode(node:)))]
         case "run_query":
-            return try await runQuery(client, args, context, access: resolved.access)
+            return try await runQuery(client, args, context, access: resolved.access, profile: resolved.profile)
         case "explain_query":
-            return try await explain(client, args, context)
+            return try await explain(client, args, context, profile: resolved.profile)
         case "execute_statement":
             guard resolved.access == .readWrite else {
                 throw MCPToolError("Connection “\(resolved.profile.displayName)” only allows read-only AI access; use run_query, or change its AI access to Read & write in CcinnStarRocks.")
             }
-            return try await execute(client, args, context)
+            return try await execute(client, args, context, profile: resolved.profile)
         default:
             throw MCPToolError("Unknown tool “\(name)”.")
         }
@@ -382,7 +386,9 @@ public struct StarRocksMCPTools: MCPToolProvider {
         return [
             "queries": .array(snapshot.queries.prefix(cap).map { process in
                 ["connection_id": .int(Int64(process.connectionID)), "user": JSONValue(process.user), "database": JSONValue(process.database),
-                 "seconds": JSONValue(process.timeSeconds), "statement": JSONValue(process.statement.map { String($0.prefix(2_000)) }),
+                 "seconds": JSONValue(process.timeSeconds),
+                 // Other sessions' SQL may carry credentials or personal data: a digest, every literal replaced by `?`.
+                 "statement": JSONValue(process.statement.map { String(SQLDigest.digest($0).prefix(2_000)) }),
                  "query_id": JSONValue(process.queryID)]
             }),
             "loads": .array(snapshot.loads.prefix(cap).map { job in
@@ -404,21 +410,25 @@ public struct StarRocksMCPTools: MCPToolProvider {
 
     // MARK: SQL tools
 
-    private func runQuery(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext, access: MCPAccess) async throws -> JSONValue {
+    /// The session database unqualified names resolve in: the call's `database`, else the connection's default.
+    private func sessionDatabase(_ args: Arguments, _ profile: ConnectionProfile) -> String? {
+        args.string("database") ?? profile.defaultDatabase
+    }
+
+    private func runQuery(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext, access: MCPAccess,
+                          profile: ConnectionProfile) async throws -> JSONValue {
         let sql = try args.required("sql")
-        if let reason = ReadOnlySQLGuard.check(sql) {
-            let hint = access == .readWrite ? " Use execute_statement for statements that change data." : ""
-            throw MCPToolError(reason + hint)
-        }
-        guard let statement = SQLStatementSplitter.split(sql).first?.text else { throw MCPToolError("The statement is empty.") }
         let limit = args.int("limit", default: Self.defaultRowLimit, range: 1...Self.maxRowLimit)
-        var executed = statement
-        var limitApplied = false
-        if SQLStatementKind.of(statement) == .query {
-            let outcome = AutoLimit.apply(to: statement, limit: limit + 1)
-            executed = outcome.sql
-            limitApplied = outcome.applied
+        // The exact text sent is built and guarded in one place.
+        let wire: ReadOnlySQLGuard.WireStatement
+        do {
+            wire = try ReadOnlySQLGuard.wireStatement(for: sql, rowLimit: limit + 1, database: sessionDatabase(args, profile))
+        } catch let rejection as ReadOnlySQLGuard.Rejection {
+            let hint = access == .readWrite ? " Use execute_statement for statements that change data." : ""
+            throw MCPToolError(rejection.message + hint)
         }
+        let executed = wire.sql
+        let limitApplied = wire.limitApplied
         context.statement = executed
         let started = ContinuousClock.now
         let results = try await runInSession(client, sql: executed, args: args, limits: RowLimits(maxRows: limit, drainRows: 10_000))
@@ -432,14 +442,14 @@ public struct StarRocksMCPTools: MCPToolProvider {
         return .object(payload)
     }
 
-    private func explain(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
+    private func explain(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext, profile: ConnectionProfile) async throws -> JSONValue {
         let sql = try args.required("sql")
-        if let ambiguous = ReadOnlySQLGuard.ambiguityRejection(sql) { throw MCPToolError(ambiguous) }
-        guard let statement = SQLStatementSplitter.split(sql).first?.text, SQLStatementSplitter.split(sql).count == 1 else {
-            throw MCPToolError("Pass exactly one SELECT query.")
+        let body: String
+        do {
+            body = try ReadOnlySQLGuard.explainStatement(for: sql, costs: args.bool("costs") ?? false, database: sessionDatabase(args, profile)).sql
+        } catch let rejection as ReadOnlySQLGuard.Rejection {
+            throw MCPToolError(rejection.message)
         }
-        let body = SQLStatementKind.of(statement) == .explain ? statement : ((args.bool("costs") ?? false) ? "EXPLAIN COSTS " : "EXPLAIN ") + statement
-        if let reason = ReadOnlySQLGuard.check(body) { throw MCPToolError(reason) }
         context.statement = body
         let results = try await runInSession(client, sql: body, args: args, limits: RowLimits(maxRows: 20_000, maxBytes: 16 * 1024 * 1024))
         let lines = results.last { $0.hasRowSet }?.rows.map { $0.compactMap { $0 }.joined(separator: "\t") } ?? []
@@ -449,9 +459,16 @@ public struct StarRocksMCPTools: MCPToolProvider {
         return ["statement": .string(body), "plan": .string(plan)]
     }
 
+    /// Every check on AI SQL reads it as the StarRocks dialect does; a client that does not pin that dialect on its
+    /// connections is not used (fail closed).
+    static func dialectRefusal(_ configuration: ConnectionConfiguration) -> String? {
+        configuration.requiresStarRocksDialect ? nil
+            : "This connection was opened without pinning the StarRocks SQL dialect, which AI access requires; it is not used."
+    }
+
     /// The one statement `execute_statement` may run. Cluster setting changes are refused: the SQL editor asks the
     /// user to confirm them, and an MCP call cannot be confirmed.
-    static func executableStatement(_ sql: String) throws -> String {
+    static func executableStatement(_ sql: String, database: String? = nil) throws -> String {
         if let ambiguous = ReadOnlySQLGuard.ambiguityRejection(sql) { throw MCPToolError(ambiguous) }
         let statements = SQLStatementSplitter.split(sql)
         guard statements.count == 1, let statement = statements.first?.text else {
@@ -460,11 +477,29 @@ public struct StarRocksMCPTools: MCPToolProvider {
         if let change = ClusterSettingChange.of(statement) {
             throw MCPToolError("Changing \(change.displayName) is not allowed over MCP. Cluster settings can only be changed in the CcinnStarRocks SQL editor, where every change must be confirmed by the user.")
         }
+        // Writes may not read secret-bearing sources either (`INSERT INTO t SELECT * FROM information_schema.tasks`,
+        // `… FROM FILES('path' = 'file:///…')`), nor show them.
+        let lexer = SQLLexer(statement)
+        let tokens = lexer.tokens().filter { $0.kind != .comment }
+        let words = tokens.map { $0.kind == .keyword || $0.kind == .identifier ? lexer.text(of: $0).uppercased() : lexer.text(of: $0) }
+        let reads = ["SELECT", "WITH", "(", "EXPLAIN", "DESC", "DESCRIBE"].contains(words.first ?? "")
+        if let secret = ReadOnlySQLGuard.secretSourceRejection(tokens: tokens, words: words, lexer: lexer, database: reads ? database : nil) {
+            throw MCPToolError(secret)
+        }
+        if words.first == "SHOW", !ReadOnlySQLGuard.showIsAllowed(words) {
+            throw MCPToolError("This SHOW statement is not available to AI: it may show other sessions' SQL, credentials or server configuration.")
+        }
+        if words.first == "ADMIN", words.count > 1, words[1] == "SHOW", !(words.count > 2 && words[2] == "REPLICA") {
+            throw MCPToolError("Only ADMIN SHOW REPLICA DISTRIBUTION / STATUS is available to AI; configuration can carry secrets.")
+        }
+        if ["DESC", "DESCRIBE"].contains(words.first ?? ""), words.count > 1, words[1] == "STORAGE" {
+            throw MCPToolError("Storage volumes are not available to AI: they carry storage credentials.")
+        }
         return statement
     }
 
-    private func execute(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
-        let statement = try Self.executableStatement(try args.required("sql"))
+    private func execute(_ client: StarRocksClient, _ args: Arguments, _ context: CallContext, profile: ConnectionProfile) async throws -> JSONValue {
+        let statement = try Self.executableStatement(try args.required("sql"), database: sessionDatabase(args, profile))
         context.statement = statement
         let results = try await runInSession(client, sql: statement, args: args, limits: RowLimits(maxRows: Self.maxRowLimit, drainRows: 10_000))
         var payload = Self.encode(results: results, limitRows: Self.maxRowLimit)
@@ -551,7 +586,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
             "inactive_reason": JSONValue(status.inactiveReason), "partition_type": JSONValue(status.partitionType),
             "task_name": JSONValue(status.taskName), "last_refresh_state": JSONValue(status.lastRefreshState),
             "last_refresh_start": JSONValue(status.lastRefreshStart), "last_refresh_finish": JSONValue(status.lastRefreshFinish),
-            "last_refresh_seconds": JSONValue(status.lastRefreshDurationSeconds), "last_refresh_error": JSONValue(status.lastRefreshError),
+            "last_refresh_seconds": JSONValue(status.lastRefreshDurationSeconds), "last_refresh_error": JSONValue(status.lastRefreshError.map(SQLDigest.digest)),
             "rows": JSONValue(status.rowCount), "query_rewrite": JSONValue(status.rewriteStatus), "schedule": JSONValue(status.refreshPolicy),
             "definition": JSONValue(status.definition),
         ]
@@ -561,7 +596,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
         [
             "task_name": .string(run.taskName), "state": .string(run.state), "database": JSONValue(run.database),
             "created": JSONValue(run.createTime), "finished": JSONValue(run.finishTime), "progress": JSONValue(run.progress),
-            "duration_seconds": JSONValue(run.duration().map { ($0 * 10).rounded() / 10 }), "error": JSONValue(run.errorMessage),
+            "duration_seconds": JSONValue(run.duration().map { ($0 * 10).rounded() / 10 }), "error": JSONValue(run.errorMessage.map(SQLDigest.digest)),
             "query_id": .string(run.queryID),
         ]
     }
@@ -595,6 +630,16 @@ struct Arguments: Sendable {
         }
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
+    }
+
+    /// The first argument other than `sql` whose text holds a control character (Unicode Cc: NUL, C0, DEL, C1). Names
+    /// reach the server as given, while the handshake and identifier quoting drop NUL, so such a name could arrive as
+    /// a different one than the guard checked.
+    func controlCharacterArgument() -> String? {
+        values.keys.sorted().first { key in
+            guard key != "sql", case let .string(text) = values[key] else { return false }
+            return text.unicodeScalars.contains { $0.properties.generalCategory == .control }
+        }
     }
 
     func required(_ key: String) throws -> String {

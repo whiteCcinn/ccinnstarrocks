@@ -36,10 +36,14 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
     private let auth: AuthFlow
     private let connectionID: UInt32
     private let handler: @Sendable (String) -> Reply
+    /// `SET` statements are answered with OK by the server itself unless `false`; then `handler` answers them too.
+    private let answersSET: Bool
 
-    init(connectionID: UInt32 = 7, auth: AuthFlow = .accept, handler: @escaping @Sendable (String) -> Reply = { _ in .packets([FakeMySQLServer.ok()]) }) {
+    init(connectionID: UInt32 = 7, auth: AuthFlow = .accept, answersSET: Bool = true,
+         handler: @escaping @Sendable (String) -> Reply = { _ in .packets([FakeMySQLServer.ok()]) }) {
         self.auth = auth
         self.connectionID = connectionID
+        self.answersSET = answersSET
         self.handler = handler
         enqueue([Self.greeting(connectionID: connectionID)], firstSequence: 0)
     }
@@ -131,7 +135,7 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
                 let sql = String(decoding: packet.payload.dropFirst(), as: UTF8.self)
                 state.withLockUnchecked { $0.queries.append(sql) }
                 // Session setup issued by every connection.
-                if sql.uppercased().hasPrefix("SET ") {
+                if answersSET, sql.uppercased().hasPrefix("SET ") {
                     enqueue([Self.ok()], firstSequence: 1)
                     return
                 }

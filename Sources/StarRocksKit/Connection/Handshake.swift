@@ -17,6 +17,10 @@ enum Handshake {
 
         let usesHandshakeDatabase = configuration.catalog.map { $0.isEmpty || $0 == SQLText.defaultCatalog } ?? true
         let database = configuration.database?.trimmingCharacters(in: .whitespaces)
+        // NUL ends a handshake string: refuse it rather than send a different name than the one given (and checked).
+        if configuration.username.utf8.contains(0) || database?.utf8.contains(0) == true {
+            throw StarRocksError(.invalidArgument, "The user or database name contains a NUL character, which a MySQL handshake cannot carry.")
+        }
         var capabilities = Capabilities.client.intersection(greeting.capabilities).union(.protocol41)
         if !usesHandshakeDatabase || database?.isEmpty != false { capabilities.remove(.connectWithDB) }
 

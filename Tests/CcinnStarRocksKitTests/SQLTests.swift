@@ -13,8 +13,9 @@ struct SQLLexerTests {
 
     @Test func classifiesTokens() {
         let tokens = kinds("SELECT `order id`, 'it''s', 3.5e2, @@query_timeout FROM t -- note")
-        #expect(tokens.map(\.0) == [.keyword, .quotedIdentifier, .punctuation, .string, .punctuation, .number, .punctuation,
-                                    .variable, .keyword, .identifier, .comment])
+        let expected: [SQLToken.Kind] = [.keyword, .quotedIdentifier, .punctuation, .string, .punctuation, .number, .punctuation,
+                                         .variable, .keyword, .identifier, .comment]
+        #expect(tokens.map(\.0) == expected)
         #expect(tokens.last?.1 == "-- note")
     }
 
@@ -148,7 +149,9 @@ struct CompletionTests {
 
     @Test func columnsOfAnAlias() {
         let result = complete("SELECT o.| FROM orders o")
-        #expect(result.items.map(\.label) == ["order_id", "city", "total"].sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        let columns: [String] = ["order_id", "city", "total"]
+        let expected = columns.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        #expect(result.items.map(\.label) == expected)
         #expect(result.items.allSatisfy { $0.kind == .column })
     }
 

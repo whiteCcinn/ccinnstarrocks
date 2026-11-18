@@ -18,6 +18,9 @@ public struct ConnectionConfiguration: Sendable, Equatable {
     /// The default gives the optimizer more time than StarRocks' 3 s default, which busy FEs exceed
     /// on `information_schema` queries.
     public var sessionVariables: [(name: String, value: String)]
+    /// Every connection sets the StarRocks SQL dialect after the session variables and verifies it, or fails to connect
+    /// (see `StarRocksDialect`). For AI access, whose checks read SQL the way the StarRocks dialect does.
+    public var requiresStarRocksDialect = false
 
     public init(endpoint: Endpoint, username: String, password: String = "", database: String? = nil, catalog: String? = nil,
                 connectTimeout: Double = 10, allowCleartextPassword: Bool = false, applicationName: String = "CcinnStarRocks",
@@ -38,7 +41,7 @@ public struct ConnectionConfiguration: Sendable, Equatable {
     public static func == (lhs: ConnectionConfiguration, rhs: ConnectionConfiguration) -> Bool {
         lhs.endpoint == rhs.endpoint && lhs.username == rhs.username && lhs.password == rhs.password && lhs.database == rhs.database
             && lhs.catalog == rhs.catalog && lhs.connectTimeout == rhs.connectTimeout && lhs.allowCleartextPassword == rhs.allowCleartextPassword
-            && lhs.applicationName == rhs.applicationName
+            && lhs.applicationName == rhs.applicationName && lhs.requiresStarRocksDialect == rhs.requiresStarRocksDialect
             && lhs.sessionVariables.map(\.name) == rhs.sessionVariables.map(\.name) && lhs.sessionVariables.map(\.value) == rhs.sessionVariables.map(\.value)
     }
 

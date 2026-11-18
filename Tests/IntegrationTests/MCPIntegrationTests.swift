@@ -193,6 +193,92 @@ struct MCPPrivilegedAccountTests {
     }
 }
 
+/// 1.3.2: what AI must not read, pinned on the servers: a plain account reads the backend's files through FILES() and
+/// another user's task SQL (literals included) from information_schema.tasks. MCP refuses both; get_running_tasks shows
+/// running statements only as digests.
+@Suite("MCP and secret-bearing sources", .serialized)
+struct MCPSecretSourceTests {
+    @Test(arguments: IntegrationEnvironment.targets)
+    func secretsAndServerFilesStayOutOfReach(target: IntegrationEnvironment.Target) async throws {
+        let admin = try await IntegrationEnvironment.client(target)
+        defer { Task { await admin.close() } }
+        let suffix = String(UInt32.random(in: 0...UInt32.max), radix: 36)
+        let reader = "ccinn_it_secret_\(suffix)", task = "ccinn_it_task_\(suffix)", marker = "CCINNSECRET\(suffix.uppercased())"
+        _ = try await admin.execute("CREATE USER '\(reader)'@'%'")
+        _ = try await admin.execute("GRANT SELECT ON ALL TABLES IN DATABASE shop TO USER '\(reader)'@'%'")
+        let setup = admin.openSession(database: "shop")
+        _ = try await setup.run("SUBMIT TASK \(task) SCHEDULE EVERY (INTERVAL 1 DAY) AS INSERT INTO shop.orders SELECT * FROM shop.orders WHERE city = '\(marker)'")
+        await setup.close()
+        do {
+            try await checkSecrets(target, reader: reader, task: task, marker: marker)
+        } catch {
+            _ = try? await admin.execute("DROP TASK \(task)")
+            _ = try? await admin.execute("DROP USER '\(reader)'@'%'")
+            throw error
+        }
+        _ = try? await admin.execute("DROP TASK \(task)")
+        _ = try? await admin.execute("DROP USER '\(reader)'@'%'")
+    }
+
+    private func checkSecrets(_ target: IntegrationEnvironment.Target, reader: String, task: String, marker: String) async throws {
+        // The threats are real for an ordinary account.
+        let plain = try await IntegrationEnvironment.client(target, user: reader)
+        defer { Task { await plain.close() } }
+        let passwd = try await plain.execute("SELECT * FROM FILES('path' = 'file:///etc/passwd', 'format' = 'csv', 'csv.column_separator' = ':') LIMIT 1")
+        #expect(passwd.rows.first?.first == "root", "FILES() reads the backend's files")
+        let definitions = try await plain.execute("SELECT DEFINITION FROM information_schema.tasks WHERE TASK_NAME = '\(task)'")
+        #expect(definitions.rows.first?.first??.contains(marker) == true, "another user's task SQL is readable")
+
+        // Through MCP, as that same account, both are refused.
+        let process = try MCPProcess(target: target, username: reader, allowPrivileged: false)
+        defer { process.terminate() }
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        try process.send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        let refused = [
+            "SELECT * FROM FILES('path' = 'file:///etc/passwd', 'format' = 'csv', 'csv.column_separator' = ':')",
+            "SELECT DEFINITION FROM information_schema.tasks",
+            "SELECT * FROM information_schema . task_runs",
+            "SHOW FULL PROCESSLIST",
+            "ADMIN SHOW FRONTEND CONFIG",
+        ]
+        var id: Int64 = 10
+        for sql in refused {
+            for tool in ["run_query", "explain_query"] where tool == "run_query" || sql.hasPrefix("SELECT") {
+                id += 1
+                let response = try await process.request(["jsonrpc": "2.0", "id": .int(id), "method": "tools/call",
+                                                          "params": ["name": .string(tool), "arguments": ["sql": .string(sql), "database": "shop"]]])
+                #expect(response["result"]?["isError"] == .bool(true), "\(tool): \(sql)")
+                #expect(!response.serialized().contains(marker))
+            }
+        }
+        let tables = try await process.call(id: 90, "run_query", ["sql": "SELECT TABLE_NAME FROM information_schema.tables WHERE TABLE_SCHEMA = 'shop'"])
+        #expect((tables["row_count"]?.intValue ?? 0) > 0, "ordinary metadata stays readable")
+    }
+
+    @Test(arguments: IntegrationEnvironment.targets)
+    func runningStatementsAreDigests(target: IntegrationEnvironment.Target) async throws {
+        let admin = try await IntegrationEnvironment.client(target)
+        defer { Task { await admin.close() } }
+        let marker = "CCINNSECRET\(String(UInt32.random(in: 0...UInt32.max), radix: 36).uppercased())"
+        let session = admin.openSession()
+        let long = Task { try await session.run("SELECT sleep(8), '\(marker)' AS token") }
+        defer { long.cancel() }
+        try await Task.sleep(for: .seconds(2))
+        let process = try MCPProcess(target: target)
+        defer { process.terminate() }
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        try process.send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        let running = try await process.call(id: 2, "get_running_tasks", [:])
+        let text = running.serialized()
+        #expect(!text.contains(marker), "the running statement's literal is not shown")
+        #expect(text.contains("sleep(?)"), "the running statement is shown as a digest: \(text.prefix(400))")
+        _ = try? await long.value
+        await session.close()
+    }
+}
+
 /// A running MCP server subprocess with a temporary profile directory.
 final class MCPProcess: @unchecked Sendable {
     static var binary: URL {

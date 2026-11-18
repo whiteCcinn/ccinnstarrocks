@@ -59,7 +59,7 @@ struct LoadFilterTests {
 
     @Test func keywordsAreLiteralsNotPatterns() {
         let predicate = LoadFilter(keyword: #"50%_off\'x"#, field: .label).predicates().last
-        #expect(predicate == #"INSTR(LOWER(LABEL), LOWER('50%_off\\\'x')) > 0"#)
+        #expect(predicate == #"INSTR(LOWER(LABEL), LOWER('50%_off\\''x')) > 0"#)
     }
 
     @Test func typeAndStatePredicates() {

@@ -32,6 +32,22 @@ struct ConnectionTests {
         #expect(try reader.readNullTerminatedString() == "mysql_native_password")
     }
 
+    /// The handshake's strings are NUL-terminated: a NUL inside one is refused, never dropped, so the server is sent
+    /// exactly the database that was checked (`information_\0schema` must not become `information_schema` on the wire).
+    @Test func handshakeRefusesNULInsteadOfDroppingIt() async {
+        for (database, username) in [("information_\u{0}schema", "ccinn"), ("shop", "cc\u{0}inn")] {
+            let server = FakeMySQLServer()
+            await #expect {
+                _ = try await MySQLConnection.connect(
+                    ConnectionConfiguration(endpoint: Endpoint(host: "fake", port: 9030), username: username, password: "secret",
+                                            database: database, connectTimeout: 2)) { _, _ in server }
+            } throws: { error in
+                (error as? StarRocksError)?.kind == .invalidArgument
+            }
+            #expect(server.handshakeResponse.isEmpty, "nothing sent for \(database.debugDescription)")
+        }
+    }
+
     @Test func rejectedCredentialsSurfaceAsAuthenticationError() async {
         let server = FakeMySQLServer(auth: .reject(code: 1045, message: "Access denied for user 'ccinn'"))
         await #expect {

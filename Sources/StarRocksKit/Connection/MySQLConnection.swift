@@ -106,6 +106,8 @@ public actor MySQLConnection {
                 continue // unknown variable on this server version
             }
         }
+        // After the session variables, so none of them can change it again.
+        if configuration.requiresStarRocksDialect { try await StarRocksDialect.pin(self) }
         guard let catalog = configuration.catalog?.trimmingCharacters(in: .whitespaces), !catalog.isEmpty,
               catalog != SQLText.defaultCatalog else { return }
         _ = try await execute("SET CATALOG \(SQLText.quoteIdentifier(catalog))")

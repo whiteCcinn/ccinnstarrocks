@@ -29,6 +29,11 @@ final class FakeCluster: Sendable {
         return servers.keys.sorted().flatMap { servers[$0]?.queries ?? [] }
     }
     var handshakeDatabases: [String?] { state.withLockUnchecked { $0.handshakeDatabases } }
+    /// Every statement received, one list per connection in creation order.
+    var statementsByConnection: [[String]] {
+        let servers = state.withLockUnchecked { $0.servers }
+        return servers.keys.sorted().map { servers[$0]?.queries ?? [] }
+    }
 
     var transportFactory: TransportFactory {
         { [self] _, _ in

@@ -14,14 +14,17 @@ public enum SQLText {
         parts.compactMap { $0 }.filter { !$0.isEmpty }.map(quoteIdentifier).joined(separator: ".")
     }
 
-    /// Single-quoted string literal with backslash and quote escaping (MySQL default SQL mode).
+    /// Single-quoted string literal that no value can break out of, in either dialect StarRocks parses: a quote is
+    /// doubled, which ends nothing in the StarRocks or the trino dialect (in trino `\'` ends the string, so a quote in a
+    /// name could inject SQL). Backslashes and control characters keep MySQL escapes: StarRocks reads the exact value,
+    /// trino reads two characters (a wrong value at worst, never a way out of the string).
     public static func literal(_ value: String) -> String {
         var escaped = "'"
         escaped.reserveCapacity(value.utf8.count + 2)
         for character in value.unicodeScalars {
             switch character {
             case "\\": escaped += "\\\\"
-            case "'": escaped += "\\'"
+            case "'": escaped += "''"
             case "\0": escaped += "\\0"
             case "\n": escaped += "\\n"
             case "\r": escaped += "\\r"

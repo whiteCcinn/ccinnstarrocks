@@ -4,9 +4,17 @@ import StarRocksKit
 /// Opens a `StarRocksClient` for a saved profile, through its SSH tunnel when configured.
 /// Shared by the app and the MCP server.
 public enum ClientOpener {
-    public static func open(profile: ConnectionProfile, password: String, sshSecret: String?, poolSize: Int = 4,
+    /// The profile's configuration; for AI access (the MCP server) every connection also pins the StarRocks SQL
+    /// dialect, which the AI checks assume. The editor keeps the account's own dialect.
+    public static func configuration(profile: ConnectionProfile, password: String, forAI: Bool) -> ConnectionConfiguration {
+        var configuration = profile.configuration(password: password)
+        configuration.requiresStarRocksDialect = forAI
+        return configuration
+    }
+
+    public static func open(profile: ConnectionProfile, password: String, sshSecret: String?, poolSize: Int = 4, forAI: Bool = false,
                             progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> StarRocksClient {
-        let configuration = profile.configuration(password: password)
+        let configuration = configuration(profile: profile, password: password, forAI: forAI)
         var tunnel: SSHTunnel?
         if let ssh = profile.ssh {
             progress("Opening SSH tunnel through \(ssh.host)…")

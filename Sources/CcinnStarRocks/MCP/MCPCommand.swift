@@ -65,7 +65,7 @@ enum MCPCommand {
         let registry = MCPClientRegistry { profile in
             let password = repository.password(for: profile) ?? ""
             let sshSecret = profile.ssh != nil ? repository.sshSecret(for: profile) : nil
-            return try await ClientOpener.open(profile: profile, password: password, sshSecret: sshSecret, poolSize: 3)
+            return try await ClientOpener.open(profile: profile, password: password, sshSecret: sshSecret, poolSize: 3, forAI: true)
         }
         let provider = StarRocksMCPTools(resolver: resolver, registry: registry,
                                          audit: MCPAuditLog(directory: ProfileRepository.defaultDirectory))
