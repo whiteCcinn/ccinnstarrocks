@@ -232,6 +232,27 @@ struct CompletionTests {
         #expect(complete("SELECT 1 -- or|").items.isEmpty)
     }
 
+    // The editor opens the list on whitespace only where an object name must follow.
+    @Test func objectNameContextsAreFlagged() {
+        for text in ["SELECT * FROM |", "SELECT * FROM orders o JOIN |", "SELECT * FROM orders o, |", "INSERT INTO |",
+                     "UPDATE |", "TRUNCATE TABLE |", "DESC |", "use |", "SELECT * FROM orders;\nSELECT * FROM |"] {
+            #expect(complete(text).expectsObjectName, "\(text)")
+        }
+        for text in ["|", "SELECT |", "SELECT * FROM orders o |", "SELECT * FROM orders WHERE city = |", "SELECT * FROM shop.|",
+                     "SELECT * FROM orders ORDER BY total DESC |", "SELECT 'FROM |'", "SELECT 1 -- FROM |"] {
+            #expect(!complete(text).expectsObjectName, "\(text)")
+        }
+    }
+
+    @Test func descAfterOrderByIsASortDirectionNotDescribe() {
+        let labels = complete("SELECT * FROM orders ORDER BY total DESC |").items.map(\.label)
+        #expect(!labels.contains("orders"))
+        #expect(!labels.contains("customers"))
+        #expect(labels.contains("LIMIT"))
+        #expect(complete("DESC |").items.contains { $0.label == "orders" })
+        #expect(complete("DESCRIBE cu|").items.first?.label == "customers")
+    }
+
     @Test func functionsAndFuzzyMatching() {
         let items = complete("SELECT dt| FROM orders").items
         #expect(items.first?.label == "date_trunc")

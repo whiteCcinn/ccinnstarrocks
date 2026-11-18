@@ -421,6 +421,9 @@ struct SQLEditor: NSViewRepresentable {
 
         func forceCompletion() { scheduleCompletion(force: true) }
 
+        /// The items the popup lists; `nil` while it is hidden.
+        var visibleCompletions: [CompletionItem]? { completionPanel?.isVisible == true ? completionModel.items : nil }
+
         private func scheduleCompletion(force: Bool) {
             completionTask?.cancel()
             guard let provider = parent.completionProvider, let textView, parent.isEditable else { return }
@@ -431,7 +434,13 @@ struct SQLEditor: NSViewRepresentable {
                 let isWordInput = typed.count == 1 && typed.unicodeScalars.allSatisfy {
                     CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "." || $0 == "`" || $0 == "$"
                 }
-                guard isWordInput else { return hideCompletions() }
+                // A space may open the object list (`FROM ` → tables). Return and Tab never do: Return is pressed
+                // twice for a blank line, and the second press would take the list's first item.
+                let isSpace = typed == " "
+                guard isWordInput || isSpace else { return hideCompletions() }
+                // The space ended the word being completed: its list must not stay up, or be accepted, while the next
+                // one is computed.
+                if isSpace { hideCompletions() }
             }
             let text = textView.string
             let cursor = selection.location
@@ -443,7 +452,8 @@ struct SQLEditor: NSViewRepresentable {
                 guard let self, !Task.isCancelled, let textView = self.textView,
                       textView.string == text, textView.selectedRange().location == cursor else { return }
                 let exactOnly = result.items.count == 1 && result.items[0].label.caseInsensitiveCompare(result.prefix) == .orderedSame
-                if result.items.isEmpty || exactOnly || (!force && result.prefix.isEmpty && !afterDot) {
+                let opensWithoutPrefix = force || afterDot || result.expectsObjectName
+                if result.items.isEmpty || exactOnly || (result.prefix.isEmpty && !opensWithoutPrefix) {
                     self.hideCompletions()
                 } else {
                     self.showCompletions(result)
@@ -827,9 +837,10 @@ private struct CompletionListView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        // Rows keep the identity of their item. Keyed by position (`.id(index)`), row 0 stayed "the
+                        // same view" across results and kept drawing the first list ever shown.
                         ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                             CompletionRow(item: item, prefix: model.prefix, isSelected: index == model.selectedIndex)
-                                .id(index)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     model.selectedIndex = index
@@ -840,7 +851,9 @@ private struct CompletionListView: View {
                     .padding(5)
                 }
                 .scrollIndicators(.never)
-                .onChange(of: model.selectedIndex) { _, index in proxy.scrollTo(index) }
+                .onChange(of: model.selectedIndex) { _, _ in
+                    if let item = model.selectedItem { proxy.scrollTo(item.id) }
+                }
             }
             if let item = model.selectedItem, item.kind == .function, let detail = item.detail {
                 Divider()

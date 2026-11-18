@@ -25,14 +25,18 @@ public struct CompletionResult: Sendable {
     public let missingColumns: [TableKey]
     /// Databases whose object lists are needed but not loaded yet.
     public let missingDatabases: [String]
+    /// The cursor is where a table or database name must follow (`FROM `, `JOIN `, `USE `, …), so the editor
+    /// may offer the list before anything is typed.
+    public let expectsObjectName: Bool
 
     public init(replacementRange: Range<Int>, prefix: String, items: [CompletionItem], missingColumns: [TableKey] = [],
-                missingDatabases: [String] = []) {
+                missingDatabases: [String] = [], expectsObjectName: Bool = false) {
         self.replacementRange = replacementRange
         self.prefix = prefix
         self.items = items
         self.missingColumns = missingColumns
         self.missingDatabases = missingDatabases
+        self.expectsObjectName = expectsObjectName
     }
 
     public var needsMoreSchema: Bool { !missingColumns.isEmpty || !missingDatabases.isEmpty }
@@ -53,6 +57,14 @@ public enum CompletionEngine {
         case afterTableReference
         case database
         case expression
+
+        /// Only a table or database name can follow, so the list is worth offering before anything is typed.
+        var expectsObjectName: Bool {
+            switch self {
+            case .tableName, .database: true
+            case .statementStart, .showTarget, .afterTableReference, .expression: false
+            }
+        }
     }
 
     /// A table reference in scope: a base table (database + name) or a derived table/CTE with known columns.
@@ -100,6 +112,7 @@ public enum CompletionEngine {
         var candidates: [CompletionItem]
         var missing: [TableKey] = []
         var missingDatabases: [String] = []
+        var expectsObjectName = false
         if let last = before.last, isDot(last, lexer) {
             let qualifier = qualifierChain(before: before, lexer: lexer)
             (candidates, missing) = memberCandidates(qualifier: qualifier, scope: scope, schema: schema)
@@ -112,10 +125,11 @@ public enum CompletionEngine {
             if case .tableName = context, let current = schema.currentDatabase, schema.objects(in: current) == nil {
                 missingDatabases.append(current)
             }
+            expectsObjectName = context.expectsObjectName
         }
         let ranked = rank(candidates, prefix: prefix, limit: limit)
         return CompletionResult(replacementRange: replacementStart..<cursor, prefix: prefix, items: ranked,
-                                missingColumns: missing, missingDatabases: missingDatabases)
+                                missingColumns: missing, missingDatabases: missingDatabases, expectsObjectName: expectsObjectName)
     }
 
     // MARK: Scope analysis
@@ -298,6 +312,8 @@ public enum CompletionEngine {
             guard depth == 0 else { continue }
             let word = words[index]
             switch word {
+            case "DESC" where index > 0, "DESCRIBE" where index > 0:
+                break // `ORDER BY x DESC`: a sort direction; only a statement-leading DESC describes a table.
             case "FROM" where firstWord == "SHOW":
                 let lowered = words.joined(separator: " ")
                 return lowered.contains("TABLES") || lowered.contains("ROUTINE") || lowered.contains("LOAD") || lowered.contains("ALTER")
