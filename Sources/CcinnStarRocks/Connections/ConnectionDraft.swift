@@ -73,7 +73,8 @@ final class ConnectionDraft {
         profile.connectTimeout = min(max(connectTimeout, 1), 120)
         profile.mcpAccess = mcpAccess
         profile.ssh = sshEnabled ? ssh : nil
-        return profile
+        // The privileged-account opt-in was given for one account.
+        return original.map { profile.keepingPrivilegedOptIn(from: $0) } ?? profile
     }
 
     var validationErrors: [String] { makeProfile().validationErrors }

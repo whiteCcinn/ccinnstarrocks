@@ -43,6 +43,9 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var connectTimeout: Double
     /// AI access through the MCP server (off unless the user opts in).
     public var mcpAccess: MCPAccess
+    /// Read-only AI access is refused for accounts with administrator privileges unless the user allows it here. The
+    /// opt-in is for one account: changing the host, port or user name clears it (`keepingPrivilegedOptIn`).
+    public var mcpAllowPrivilegedAccount: Bool = false
     public var createdAt: Date
     public var lastConnectedAt: Date?
 
@@ -85,6 +88,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         confirmMutations = try container.decodeIfPresent(Bool.self, forKey: .confirmMutations) ?? false
         connectTimeout = try container.decodeIfPresent(Double.self, forKey: .connectTimeout) ?? 10
         mcpAccess = (try? container.decodeIfPresent(MCPAccess.self, forKey: .mcpAccess)) ?? .disabled
+        mcpAllowPrivilegedAccount = (try? container.decodeIfPresent(Bool.self, forKey: .mcpAllowPrivilegedAccount)) ?? false
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
     }

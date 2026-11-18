@@ -40,8 +40,16 @@ struct MCPSettingsView: View {
                             }
                         }
                     }
+                    if profile.mcpAccess != .disabled {
+                        Toggle(isOn: Binding(get: { profile.mcpAllowPrivilegedAccount },
+                                             set: { store.setMCPAllowPrivilegedAccount($0, for: profile) })) {
+                            Text("Allow privileged account")
+                            Text("Read-only AI access refuses accounts with administrator privileges (root, cluster_admin, user_admin, db_admin, system privileges, grant options), because read-only checks cannot stop them. Allow it only for an account you would let the AI administer.")
+                        }
+                        .padding(.leading, 17)
+                    }
                 }
-                Text("Read-only allows metadata tools and SELECT / SHOW / DESC / EXPLAIN, at most 1,000 rows per call. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
+                Text("Read-only allows metadata tools and SELECT / SHOW / DESC / EXPLAIN, at most 1,000 rows per call; it never reads other sessions' SQL, credentials or files on the servers. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

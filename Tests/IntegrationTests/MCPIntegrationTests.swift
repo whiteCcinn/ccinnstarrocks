@@ -124,6 +124,75 @@ struct MCPDroppedCharacterTests {
     }
 }
 
+/// 1.3.2: read-only AI access refuses accounts with administrator privileges (roles followed transitively) on every
+/// tool call, unless the connection allows it; ordinary accounts work as before.
+@Suite("MCP and privileged accounts", .serialized)
+struct MCPPrivilegedAccountTests {
+    private func initialize(_ process: MCPProcess) async throws {
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        try process.send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+    }
+
+    private func refusal(_ process: MCPProcess, id: Int64, _ tool: String, _ arguments: JSONValue) async throws -> String? {
+        let response = try await process.request(["jsonrpc": "2.0", "id": .int(id), "method": "tools/call",
+                                                  "params": ["name": .string(tool), "arguments": arguments]])
+        guard response["result"]?["isError"] == .bool(true) else { return nil }
+        return response["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+    }
+
+    @Test(arguments: IntegrationEnvironment.targets)
+    func administratorsAreRefusedAndReadersAreServed(target: IntegrationEnvironment.Target) async throws {
+        let admin = try await IntegrationEnvironment.client(target)
+        defer { Task { await admin.close() } }
+        let suffix = String(UInt32.random(in: 0...UInt32.max), radix: 36)
+        let reader = "ccinn_it_reader_\(suffix)", nested = "ccinn_it_nested_\(suffix)", wrapper = "ccinn_it_wrap_\(suffix)"
+        for sql in ["CREATE USER '\(reader)'@'%'", "GRANT SELECT ON ALL TABLES IN DATABASE shop TO USER '\(reader)'@'%'",
+                    "CREATE ROLE \(wrapper)", "GRANT cluster_admin TO ROLE \(wrapper)", "CREATE USER '\(nested)'@'%'",
+                    "GRANT SELECT ON ALL TABLES IN DATABASE shop TO USER '\(nested)'@'%'", "GRANT \(wrapper) TO USER '\(nested)'@'%'"] {
+            _ = try await admin.execute(sql)
+        }
+        // Awaited cleanup, on success and on failure: a detached task would be cut off when the test process exits.
+        do {
+            try await checkAccounts(target, reader: reader, nested: nested)
+        } catch {
+            for sql in ["DROP USER '\(reader)'@'%'", "DROP USER '\(nested)'@'%'", "DROP ROLE \(wrapper)"] { _ = try? await admin.execute(sql) }
+            throw error
+        }
+        for sql in ["DROP USER '\(reader)'@'%'", "DROP USER '\(nested)'@'%'", "DROP ROLE \(wrapper)"] { _ = try? await admin.execute(sql) }
+    }
+
+    private func checkAccounts(_ target: IntegrationEnvironment.Target, reader: String, nested: String) async throws {
+        // root, not allowed: every tool that touches the server is refused.
+        let root = try MCPProcess(target: target, allowPrivileged: false)
+        try await initialize(root)
+        for (offset, call) in [("run_query", ["sql": "SELECT 1"] as JSONValue), ("list_databases", [:]), ("list_tables", ["database": "shop"])].enumerated() {
+            let message = try await refusal(root, id: Int64(10 + offset), call.0, call.1)
+            #expect(message?.contains("privileges") == true, "\(call.0): \(message ?? "served")")
+        }
+        root.terminate()
+
+        // A role that holds cluster_admin, granted but not active, is enough to refuse.
+        let wrapped = try MCPProcess(target: target, username: nested, allowPrivileged: false)
+        try await initialize(wrapped)
+        #expect(try await refusal(wrapped, id: 20, "run_query", ["sql": "SELECT 1"])?.contains("cluster_admin") == true)
+        wrapped.terminate()
+
+        // A reader of one database is served.
+        let plain = try MCPProcess(target: target, username: reader, allowPrivileged: false)
+        try await initialize(plain)
+        #expect(try await refusal(plain, id: 30, "run_query", ["sql": "SELECT COUNT(*) FROM orders", "database": "shop"]) == nil)
+        #expect(try await refusal(plain, id: 31, "list_tables", ["database": "shop"]) == nil)
+        plain.terminate()
+
+        // root, allowed by the user: served.
+        let allowed = try MCPProcess(target: target, allowPrivileged: true)
+        try await initialize(allowed)
+        #expect(try await refusal(allowed, id: 40, "run_query", ["sql": "SELECT 1"]) == nil)
+        allowed.terminate()
+    }
+}
+
 /// A running MCP server subprocess with a temporary profile directory.
 final class MCPProcess: @unchecked Sendable {
     static var binary: URL {
@@ -141,11 +210,13 @@ final class MCPProcess: @unchecked Sendable {
     private var buffer = Data()
     private var messages: [JSONValue] = []
 
-    init(target: IntegrationEnvironment.Target) throws {
+    /// `allowPrivileged`: the root test account is an administrator, refused by read-only AI access unless allowed.
+    init(target: IntegrationEnvironment.Target, username: String = "root", allowPrivileged: Bool = true) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnsr-mcp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let profile = ConnectionProfile(name: "IT \(target.label)", host: target.endpoint.host, port: target.endpoint.port, username: "root",
+        var profile = ConnectionProfile(name: "IT \(target.label)", host: target.endpoint.host, port: target.endpoint.port, username: username,
                                         defaultDatabase: "shop", connectTimeout: 30, mcpAccess: .readOnly)
+        profile.mcpAllowPrivilegedAccount = allowPrivileged
         try ProfileRepository(directory: directory, secrets: InMemorySecretStore()).save([profile])
 
         process.executableURL = Self.binary

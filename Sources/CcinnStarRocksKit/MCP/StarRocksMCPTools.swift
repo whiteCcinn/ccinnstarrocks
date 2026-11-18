@@ -40,19 +40,25 @@ public actor MCPClientRegistry {
 
 /// The StarRocks tool set of the MCP server (see the ccinn MCP design, section 6).
 public struct StarRocksMCPTools: MCPToolProvider {
+    public typealias PrivilegeInspector = @Sendable (StarRocksClient) async throws -> AccountPrivileges
+
     public let resolver: MCPProfileResolver
     public let registry: MCPClientRegistry
     public let audit: MCPAuditLog?
+    /// Reads the account's privileges; checked on every tool call of a read-only connection.
+    public let privilegeInspector: PrivilegeInspector
 
     public static let defaultRowLimit = 200
     public static let maxRowLimit = 1_000
     public static let defaultTimeout = 30.0
     public static let maxTimeout = 120.0
 
-    public init(resolver: MCPProfileResolver, registry: MCPClientRegistry, audit: MCPAuditLog?) {
+    public init(resolver: MCPProfileResolver, registry: MCPClientRegistry, audit: MCPAuditLog?,
+                privilegeInspector: @escaping PrivilegeInspector = { try await AccountPrivileges.inspect($0) }) {
         self.resolver = resolver
         self.registry = registry
         self.audit = audit
+        self.privilegeInspector = privilegeInspector
     }
 
     // MARK: Definitions
@@ -173,6 +179,9 @@ public struct StarRocksMCPTools: MCPToolProvider {
         let resolved = try resolver.resolve(args.string("connection"))
         context.connection = resolved.profile.displayName
         let client = try await registry.client(for: resolved.profile)
+        if resolved.access == .readOnly, !resolved.profile.mcpAllowPrivilegedAccount {
+            try await refusePrivilegedAccount(client, resolved.profile)
+        }
         switch name {
         case "list_catalogs":
             let catalogs = try await client.catalogs()
@@ -208,6 +217,25 @@ public struct StarRocksMCPTools: MCPToolProvider {
         }
     }
 
+    /// Read-only checks on SQL text cannot stop an administrator, so read-only AI access refuses privileged accounts,
+    /// checked on every call (grants change), failing closed. The user can allow an account per connection.
+    private func refusePrivilegedAccount(_ client: StarRocksClient, _ profile: ConnectionProfile) async throws {
+        let howToAllow = "Use an account with only the privileges the AI needs (for example SELECT on the databases it may read), or allow this account in CcinnStarRocks → Settings → MCP → “Allow privileged account”."
+        let privileges: AccountPrivileges
+        do {
+            privileges = try await privilegeInspector(client)
+        } catch {
+            throw MCPToolError("Read-only AI access to “\(profile.displayName)” is refused: the privileges of user \(profile.username) could not be verified (\(describe(error))). \(howToAllow)")
+        }
+        guard privileges.isPrivileged else { return }
+        throw MCPToolError("Read-only AI access to “\(profile.displayName)” is refused because user \(profile.username) has administrator privileges: it \(privileges.reasons.prefix(4).joined(separator: "; it ")). Read-only checks cannot stop such an account (user-defined functions, file access, other users' data). \(howToAllow)")
+    }
+
+    private func describe(_ error: any Error) -> String {
+        if let error = error as? StarRocksError { return error.message }
+        return String(describing: error)
+    }
+
     private func listConnections() -> JSONValue {
         ["connections": .array(resolver.enabledProfiles.map { profile in
             [
@@ -219,6 +247,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
                 "default_catalog": JSONValue(profile.defaultCatalog),
                 "ssh_tunnel": .bool(profile.ssh != nil),
                 "access": .string(resolver.access(of: profile) == .readWrite ? "read_write" : "read_only"),
+                "privileged_account_allowed": .bool(profile.mcpAllowPrivilegedAccount),
             ]
         })]
     }
