@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-11-19
+
+### Fixed
+
+- **SQL completion showed suggestions for text you had already typed past.** After the first suggestions appeared, the popup kept showing an earlier list while it moved and resized for the new one. `select * from` listed `SELECT` and `SET`; `from adx_publisher` still listed every `adx…` table with `adx_demand` selected, so Return inserted the wrong name. The popup now shows exactly the suggestions for the text at the cursor.
+- **Table names are suggested right after `FROM`.** A space after `FROM`, `JOIN`, `INTO`, `UPDATE` or `TABLE` opens the list of tables, views and materialized views in the current database; a space after `USE` opens the databases. Return and Tab never open it.
+- `ORDER BY … DESC` no longer suggests tables: only a statement that starts with `DESC` / `DESCRIBE` names a table.
+
 ## [1.3.2] - 2026-11-18
 
 ### Security
@@ -150,7 +158,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.2.0...v1.3.0

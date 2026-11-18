@@ -56,6 +56,8 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
     - Catalog、数据库、表；
     - 通过别名、子查询和 CTE 解析出的列；
     - StarRocks 函数。
+
+    在 `FROM`、`JOIN`、`INTO`、`UPDATE` 或 `TABLE` 后输入空格即弹出表列表，`USE` 后弹出数据库列表。
   - 可执行当前语句、选中内容或整个脚本，普通 `SELECT` 会自动加上 `LIMIT`。
   - `EXPLAIN` / `EXPLAIN COSTS`，以及**基于 `KILL QUERY` 的真正取消**。
   - 错误会在精确位置下划线标出，并在该行末尾显示错误信息；即使 StarRocks 没有返回位置，也会按名称定位未知的列、表和数据库；标记会随编辑移动，修改出错语句后自动消失。

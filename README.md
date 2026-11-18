@@ -56,6 +56,8 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
     - catalogs, databases and tables,
     - columns through aliases, sub-queries and CTEs,
     - StarRocks functions.
+
+    The table list opens as soon as you type a space after `FROM`, `JOIN`, `INTO`, `UPDATE` or `TABLE`, and the database list after `USE`.
   - Run the current statement, the selection or the whole script. Plain `SELECT`s get an automatic `LIMIT`.
   - `EXPLAIN` / `EXPLAIN COSTS`, and **real cancellation with `KILL QUERY`**.
   - Errors are underlined at their exact position, with the message next to the line. Unknown columns, tables and databases are found by name even when StarRocks reports no position. The marker follows your edits and disappears once you change the failing statement.
