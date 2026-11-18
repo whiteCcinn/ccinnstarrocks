@@ -271,6 +271,7 @@ struct ResultGrid: NSViewRepresentable {
             menu.addItem(withTitle: "Copy Rows", action: #selector(copyRows), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Copy Rows as CSV", action: #selector(copyCSV), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Copy Rows as INSERT", action: #selector(copyInsert), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Copy Rows as Multi-row INSERT", action: #selector(copyMultiRowInsert), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Copy Column Name", action: #selector(copyColumnName), keyEquivalent: "").target = self
             menu.addItem(.separator())
             menu.addItem(withTitle: "Inspect Value…", action: #selector(inspectValue), keyEquivalent: "").target = self
@@ -295,6 +296,11 @@ struct ResultGrid: NSViewRepresentable {
         @objc private func copyInsert() {
             let rows = selectedData()
             if !rows.isEmpty { Pasteboard.copy(ResultExport.insertStatements(table: parent.insertTableName, columns: parent.columns, rows: rows)) }
+        }
+
+        @objc private func copyMultiRowInsert() {
+            let rows = selectedData()
+            if !rows.isEmpty { Pasteboard.copy(ResultExport.multiRowInsert(table: parent.insertTableName, columns: parent.columns, rows: rows)) }
         }
 
         @objc private func copyColumnName() {

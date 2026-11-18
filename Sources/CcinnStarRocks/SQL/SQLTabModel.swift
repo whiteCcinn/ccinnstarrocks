@@ -4,6 +4,7 @@ import Foundation
 import MySQLWire
 import Observation
 import StarRocksKit
+import UniformTypeIdentifiers
 
 /// Result of one executed statement.
 @MainActor
@@ -528,30 +529,62 @@ final class SQLTabModel {
 
     // MARK: Export
 
-    func exportCSV(_ result: ResultSet) {
+    /// Saves the whole result as `format`, written off the main actor. INSERTs go to the result's source table.
+    func export(_ result: ResultSet, sql: String, as format: ExportFormat) {
+        let baseName = Self.exportBaseName(result, sql: sql, fallback: title)
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "\(title.replacingOccurrences(of: " ", with: "_")).csv"
+        panel.allowedContentTypes = [Self.contentType(for: format)]
+        panel.nameFieldStringValue = "\(baseName).\(format.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await write(result, sql: sql, as: format, to: url) }
+    }
+
+    /// Writes the result to `url` off the main actor and reports the outcome in a toast.
+    func write(_ result: ResultSet, sql: String, as format: ExportFormat, to url: URL) async {
         let (columns, rows) = (result.columns, result.rows)
-        Task {
-            do {
-                try await Task.detached(priority: .userInitiated) {
-                    try ResultExport.writeCSV(to: url, columns: columns, rows: rows)
-                }.value
-                workspace.showToast("Exported \(Format.count(rows.count)) rows")
-            } catch {
-                workspace.showToast("Export failed: \(error.localizedDescription)", isError: true)
+        let table = ResultExport.insertTarget(columns: columns, sql: sql)
+        let sheetName = Self.exportBaseName(result, sql: sql, fallback: title)
+        do {
+            let summary = try await Task.detached(priority: .userInitiated) {
+                try ResultExport.write(format, to: url, columns: columns, rows: rows, table: table, sheetName: sheetName)
+            }.value
+            var message = "Exported \(Format.count(summary.rows)) rows to \(url.lastPathComponent)"
+            if summary.truncatedCells > 0 {
+                message += "; \(Format.count(summary.truncatedCells)) values cut to Excel's 32,767 characters"
             }
+            workspace.showToast(message)
+        } catch {
+            workspace.showToast("Export failed: \(error.localizedDescription)", isError: true)
         }
     }
 
-    func copyTSV(_ result: ResultSet) {
+    /// Copies the whole result as `format` (text formats only).
+    func copy(_ result: ResultSet, sql: String, as format: ExportFormat) {
+        guard format.isCopyable else { return }
         let (columns, rows) = (result.columns, result.rows)
+        let table = ResultExport.insertTarget(columns: columns, sql: sql)
         Task {
-            let text = await Task.detached(priority: .userInitiated) { ResultExport.tsv(columns: columns, rows: rows) }.value
+            let text = await Task.detached(priority: .userInitiated) {
+                ResultExport.render(format, columns: columns, rows: rows, table: table)
+            }.value
             Pasteboard.copy(text)
-            workspace.showToast("Copied \(Format.count(rows.count)) rows")
+            workspace.showToast("Copied \(Format.count(rows.count)) rows as \(format.displayName)")
+        }
+    }
+
+    /// The source table when every column comes from one, else the tab's title; safe as a file name.
+    static func exportBaseName(_ result: ResultSet, sql: String?, fallback: String) -> String {
+        let name = ResultExport.sourceTableName(columns: result.columns, sql: sql) ?? fallback
+        let cleaned = name.map { "/:\\".contains($0) || $0.isNewline ? "_" : $0 == " " ? "_" : $0 }
+        return cleaned.isEmpty ? "result" : String(cleaned)
+    }
+
+    static func contentType(for format: ExportFormat) -> UTType {
+        switch format {
+        case .csv: .commaSeparatedText
+        case .tsv: .tabSeparatedText
+        case .excel: UTType(filenameExtension: "xlsx") ?? .data
+        case .insert, .multiRowInsert: UTType(filenameExtension: "sql") ?? .plainText
         }
     }
 
