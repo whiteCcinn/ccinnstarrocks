@@ -64,7 +64,10 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - Unclosed quotes, comments and parentheses are flagged as you type.
   - **Format SQL** (⌥⌘L) lays out the selection or the whole script: one clause per line, one list item per line, indented subqueries and CASE. It only changes whitespace and the case of keywords that can never be names; names, functions, strings and comments are untouched, and the result is checked token by token before it replaces your text. Undo with ⌘Z.
   - Searchable history.
-  - CSV / TSV / `INSERT` export.
+  - **Copy as** or **Export as** CSV, TSV, **Excel (.xlsx)** and SQL `INSERT`, one statement per row or multi-row:
+    - Excel keeps values exact: integers show every digit, decimals their scale; IDs beyond Excel's 15-digit precision, and values with leading zeros, stay text. The header row is bold and frozen. Excel holds at most 1,048,575 rows; larger results are refused with a hint to use CSV.
+    - Multi-row `INSERT`s list one row per line and start a new statement every 1,000 rows or about 1 MB, under the server's packet limit.
+    - `INSERT`s target the table the rows came from (`db`.`table`, never the query's alias) when the result comes from a single table.
 - **Charts from any query**
   - Results are charted automatically: a date column with numbers becomes a line chart, categories become bars, two categories become grouped bars, two numbers become a scatter plot.
   - Switch between bar, line, area, scatter and pie, pick axes, series and aggregation.

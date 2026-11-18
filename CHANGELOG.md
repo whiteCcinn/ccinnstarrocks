@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-19
+
+### Added
+
+- **Excel export.** *Export as › Excel…* writes an `.xlsx` workbook (no Office needed, no external library):
+  - numbers are number cells only when Excel keeps them exactly: integers show every digit (format `0`, never `1.2E+12`), decimals their scale (`26.90`); integers and decimals beyond 15 significant digits, such as 64-bit IDs, and values with leading zeros stay exact text;
+  - dates, JSON and everything else are exact text; NULL is an empty cell; text that would not fit a cell (over 32,767 characters) is cut, and the toast says how many values were;
+  - the header row is bold and frozen, and columns are sized to their content;
+  - results larger than a sheet (1,048,575 rows or 16,384 columns) are refused before anything is written, with a hint to use CSV.
+- **Multi-row SQL INSERT.** *Copy as* and *Export as › SQL INSERT, Multi-row* write `INSERT INTO t (…) VALUES` with one row per line. A new statement starts every 1,000 rows, or before a row that would take it past about 1 MB, so each statement fits the server's packet limit. Loading 20,000 rows took 8 seconds on StarRocks 4.1, where 20,000 single-row INSERTs take tens of minutes. The grid's context menu has *Copy Rows as Multi-row INSERT*.
+- The result menu has *Copy as* (CSV, TSV, SQL INSERT one per row, multi-row) and *Export as* (all of those and Excel) for the whole result.
+
+### Changed
+
+- SQL `INSERT`s go to the table the rows came from. StarRocks sends no table name with result columns, so a plain single-table `SELECT … FROM db.t [alias]` names it: `select * from shop.orders o` exports `` INSERT INTO `shop`.`orders` ``, where 1.3 wrote `` `table` ``. Joins, subqueries in FROM, CTEs and set operations keep the placeholder rather than guess.
+- Exported files are named after that table when there is one.
+
+### Fixed
+
+- `nan` and `inf` values of floating-point columns were written into INSERTs unquoted, which is not valid SQL; they are now quoted.
+
 ## [1.3.4] - 2026-11-19
 
 ### Fixed
@@ -164,7 +185,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.4...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.4...v1.4.0
 [1.3.4]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.1...v1.3.2
