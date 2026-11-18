@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-11-19
+
+### Fixed
+
+- **Opening a table's Tablets tab could distort the whole window on clusters with many BEs.** *Replicas per backend* listed every BE in a column as tall as the cluster (about 46 pt per BE), and the page asked the window for that height: with 41 BEs the tab bar ended up 539 pt above the top of the window. The list now scrolls inside its card, and the tab fits the window however many BEs there are.
+
 ## [1.3.3] - 2026-11-19
 
 ### Fixed
@@ -158,7 +164,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.0...v1.3.1
