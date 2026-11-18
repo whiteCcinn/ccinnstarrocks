@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-18
+
+### Security
+
+- **`#` and characters such as emoji could hide SQL from read-only checks.** In 1.3.0 and earlier, AI (MCP) read-only mode, and the confirmation before cluster-setting changes, could be bypassed:
+  - `#` could hide a second statement, for example `SELECT 1 # ; CREATE DATABASE …`;
+  - `#` or a character above U+FFFF (an emoji, or an invisible tag character) could hide an `INTO OUTFILE` export.
+
+  StarRocks does not treat `#` as a comment and ignores those characters; the app read them differently and missed what the server ran. It now reads them as StarRocks does. MCP refuses any statement with `#`, `\`, control characters or such characters outside quotes and comments.
+
+### Fixed
+
+- `#` is no longer highlighted or checked as a comment, since StarRocks runs the rest of the line.
+- Format SQL leaves text containing those characters unchanged instead of rewriting it.
+
 ## [1.3.0] - 2026-11-17
 
 ### Added
