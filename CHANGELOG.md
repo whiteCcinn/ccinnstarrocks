@@ -5,6 +5,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-18
+
+### Security
+
+- **Read-only AI (MCP) access refuses administrator accounts.** No check on SQL text can stop an administrator: user-defined functions, file access and other users' data are reachable from a plain `SELECT`. An account is refused if it:
+  - holds `root`, `cluster_admin`, `user_admin` or `db_admin`;
+  - has any system privilege;
+  - may impersonate other users;
+  - holds a grant option;
+  - or has write privileges on all databases.
+
+  The check follows every role the account holds, active or not, and runs on every call. It fails closed when the grants cannot be read. **Settings → MCP → Allow privileged account** allows one connection's account (off by default; changing the host or user name clears it).
+- **AI could read other sessions' SQL, tables beyond its privileges and files on the database servers.** In 1.3.1 and earlier, an account with nothing but SELECT on one database could use read-only AI access to:
+  - read any file on the backend hosts, with `FILES('path' = 'file:///…')`;
+  - read other users' scheduled SQL, string literals included, from `information_schema.tasks`;
+  - read rows of tables it may not read with `lookup_string()` (3.3) and `dict_mapping()` (4.1), their DDL, row counts and column statistics with `get_query_dump()`, and materialized-view internals with the `inspect_…` functions. `SHOW BUILTIN FUNCTIONS` does not list these.
+
+  AI tools now refuse:
+  - in read-only queries, every function that is not a reviewed built-in: user-defined functions, and functions that read files, other users' data or the network. These include `FILES()`, `get_query_profile()`, `get_query_dump()`, `lookup_string()`, `dict_mapping()`, the `inspect_…` functions and, on 4.1, `ai_query()`, which makes the backends send query data to any URL and returns the reply. `execute_statement` refuses those named here too. Functions that a new StarRocks version adds are refused until they are reviewed;
+  - names holding a letter StarRocks may read as a different ASCII letter (`ı`, `ſ`, `İ`, the Kelvin sign, ligatures such as `ﬁ`), quoted or not: `fıles(` is `FILES(` on the server;
+  - system tables not on a reviewed list: tasks, task runs, query history, loads, pipes, routine loads, backend logs and configuration, and the audit log;
+  - a system schema as the session database, however it is written (`default_catalog.information_schema`, back-quotes, control characters);
+  - SHOW forms beyond metadata: `PROCESSLIST`, `PROC`, `LOAD`, `ROUTINE LOAD`, `CREATE CATALOG`, `RESOURCES`, `STORAGE VOLUMES` and `AUTHENTICATION`.
+
+  `get_running_tasks` shows statements with every literal replaced by `?`.
+- **The trino SQL dialect bypassed every check on AI SQL.** For an account whose `session.sql_dialect` property is `trino`, or on a cluster whose global dialect is `trino`, StarRocks reads `"…"` as a name. So `SELECT "lookup_string"(…)`, `"get_query_dump"(…)`, `information_schema."tasks"` and, on 4.1, `"ai_query"(…)` ran. The app's own quoted literals could also be broken out of with a quote in a name. AI connections now set the StarRocks dialect on every connection and check it, and refuse to connect when they can't. The SQL editor keeps the account's dialect. The app's own statements now double a quote inside a string instead of escaping it with a backslash, so no name can break out of them in either dialect, in the editor too.
+- **Cluster settings could be changed over MCP with `SET @@global .x = …`.** Whitespace, a comment or a line break before the dot hid the global scope. Such statements:
+  - passed execute_statement, which never changes cluster settings;
+  - skipped the editor's confirmation;
+  - were replayed after a reconnect.
+
+  They are now recognised however they are written.
+
+### Changed
+
+- The text `run_query` and `explain_query` send is built and checked in one place, after the automatic `LIMIT`, so what is checked is exactly what runs.
+- A NUL character in the user or database name is refused when connecting. Before, it was dropped, so the server got a different name than the one given. AI tools likewise refuse control characters in the names they are given (connection, catalog, database, table).
+
 ## [1.3.1] - 2026-11-18
 
 ### Security

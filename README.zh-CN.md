@@ -192,7 +192,25 @@ CcinnStarRocks 内置 **Model Context Protocol** 服务，**Claude Code**、**Co
 
 - 密码保存在钥匙串中，AI 永远看不到。
 - 只有你启用的连接才可见。
-- `run_query` 只接受单条只读语句（`SELECT`、`WITH`、`SHOW`、`DESC`、`EXPLAIN`），由应用自带的 SQL 词法分析器校验，而不是依赖模型自觉。
+- `run_query` 只接受单条只读语句（`SELECT`、`WITH`、`SHOW`、`DESC`、`EXPLAIN`），由应用自带的 SQL 词法分析器校验，而不是依赖模型自觉；校验的正是自动加上 `LIMIT` 之后、实际发送的那段文本。
+- AI 连接始终使用 StarRocks SQL 方言，即使账号或集群默认使用 `trino`。在 `trino` 方言里，`"…"` 是名字而不是字符串。如果无法设置并确认方言，连接会被拒绝。
+- **只读访问拒绝管理员账号。** 任何针对 SQL 文本的检查都拦不住管理员，因此只读 AI 访问会拒绝下列账号：
+  - 持有 `root`、`cluster_admin`、`user_admin` 或 `db_admin` 角色的账号；
+  - 拥有系统权限或 `IMPERSONATE` 权限的账号；
+  - 带授权选项（`WITH GRANT OPTION`）的账号；
+  - 对所有数据库拥有写权限的账号。
+
+  检查会追踪账号持有的所有角色（包括通过其他角色间接获得的），并且每次调用都会重新检查。请为 AI 使用一个只具备所需权限的账号；如确有需要，可在 **设置 → MCP → 允许特权账号** 中按连接单独允许（默认关闭）。
+- **其他会话的 SQL、凭据和服务器上的文件都不会暴露给 AI。** AI 无法读取：
+  - 任务历史与查询历史；
+  - 导入任务和 Pipe 的属性；
+  - BE 的日志与配置；
+  - `SHOW PROCESSLIST`；
+  - 审计日志。
+
+  名字里如果有 StarRocks 可能读成 ASCII 字母的字符（`ı` 读作 I，`ſ` 读作 S），会被拒绝，所以 `fıles(` 不能代替 `FILES(`。`get_running_tasks` 返回正在运行的语句时，所有字面量都会替换为 `?`。
+- **AI 查询只能调用经过审核的内置函数。** 用户自定义函数会被拒绝，读取文件、其他用户数据或访问网络的函数也会被拒绝。例如：`FILES()` 能读取 BE 可访问的任意路径，包括 BE 本机的磁盘；`ai_query()`（4.1）会让 BE 把查询数据发到任意 URL；`lookup_string()` 和 `get_query_dump()` 能看到账号无权读取的表。StarRocks 新版本新增的函数在审核之前一律拒绝。少数罕见写法可能藏着函数调用，也会被拒绝：在函数参数以外请写 `INTERVAL 1 DAY` 而不是 `INTERVAL (1) DAY`；`QUALIFY` 后面的窗口函数不要加括号，写成 `QUALIFY row_number() OVER (…) = 1`。
+- 用户自定义函数（Java、Python）会执行作者写入的任何逻辑，检查无法知道函数内部做了什么。只读查询会拒绝它们，但 `execute_statement`（读写连接）和视图仍然可以调用。请只给 AI 一个无法调用你不信任的函数的账号。
 - 结果最多 1,000 行（默认 200 行）、约 256 KB；语句默认 30 秒超时。
 - 在 AI 客户端取消请求时会发送 `KILL QUERY`。
 - `execute_statement` 不会修改集群配置（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`），这类修改必须在应用内二次确认。
