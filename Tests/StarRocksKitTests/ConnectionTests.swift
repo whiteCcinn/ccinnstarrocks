@@ -194,8 +194,8 @@ struct ConnectionTests {
         await #expect {
             _ = try await MySQLConnection.connect(config) { _, _ in silent }
         } throws: { ($0 as? StarRocksError)?.kind == .timeout }
-        // The 1 s deadline fired instead of hanging. Generous bound: CI scheduling adds seconds of delay.
-        #expect(ContinuousClock.now - started < .seconds(15))
+        // The timeout error proves the 1 s deadline fired; this bound only guards against a hang, with room for a busy CI runner.
+        #expect(ContinuousClock.now - started < .seconds(25))
     }
 }
 

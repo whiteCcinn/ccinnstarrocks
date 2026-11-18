@@ -541,7 +541,14 @@ struct TextPositionTests {
 
 @Suite("Diagnostics robustness")
 struct DiagnosticsFuzzTests {
-    @Test func randomInputNeverCrashes() {
+    @Test func randomInputNeverCrashes() async {
+        // Seconds of work in a debug build: on a thread of its own, with the assertions back in the test's task.
+        let violations = await onDedicatedThread { Self.fuzzDiagnostics() }
+        #expect(violations.isEmpty, "\(violations.prefix(5))")
+    }
+
+    private static func fuzzDiagnostics() -> [String] {
+        var violations: [String] = []
         let alphabet = Array("select from 'x' \"y\" `z` -- # /* */ ; . , ( ) @ 0x1F 1e9 吉 🇲🇾 \\ \n")
         let messages = ["at line 1, column 3", "from line 2, column 1 to line 1, column 9", "Column '`a`.`b`' cannot be resolved",
                         "Unknown table 'x.y'", "No viable statement for input 'from'", "at line 3, column 9999", "Table select is not found"]
@@ -551,22 +558,27 @@ struct DiagnosticsFuzzTests {
             let length = text.utf16.count
             let diagnostics = SQLLinter.diagnose(text)
             for diagnostic in diagnostics {
-                #expect(diagnostic.range.lowerBound >= 0 && diagnostic.range.upperBound <= length)
-                #expect(diagnostic.scope.lowerBound <= diagnostic.range.lowerBound && diagnostic.range.upperBound <= diagnostic.scope.upperBound)
+                if !(diagnostic.range.lowerBound >= 0 && diagnostic.range.upperBound <= length) {
+                    violations.append("range \(diagnostic.range) outside \(text.debugDescription)")
+                }
+                if !(diagnostic.scope.lowerBound <= diagnostic.range.lowerBound && diagnostic.range.upperBound <= diagnostic.scope.upperBound) {
+                    violations.append("scope \(diagnostic.scope) doesn't hold \(diagnostic.range) in \(text.debugDescription)")
+                }
             }
             for message in messages {
-                if let range = SQLErrorLocator.range(in: text, message: message) {
-                    #expect(range.lowerBound >= 0 && range.upperBound <= length && !range.isEmpty)
+                if let range = SQLErrorLocator.range(in: text, message: message), !(range.lowerBound >= 0 && range.upperBound <= length && !range.isEmpty) {
+                    violations.append("locator \(range) for \(message.debugDescription) in \(text.debugDescription)")
                 }
             }
             let start = Int.random(in: 0...length, using: &generator)
             let end = Int.random(in: start...length, using: &generator)
             let edit = SQLTextEdit(range: start..<end, replacementLength: Int.random(in: 0...5, using: &generator),
                                    separatorBeforeEnd: Bool.random(using: &generator), separatorAtStart: Bool.random(using: &generator))
-            for diagnostic in SQLDiagnosticTracker.apply([edit], to: diagnostics) {
-                #expect(diagnostic.range.lowerBound >= 0)
+            for diagnostic in SQLDiagnosticTracker.apply([edit], to: diagnostics) where diagnostic.range.lowerBound < 0 {
+                violations.append("tracked range \(diagnostic.range) in \(text.debugDescription)")
             }
             _ = SQLTextPosition.lineAndColumn(of: Int.random(in: -2...(length + 2), using: &generator), in: text)
         }
+        return violations
     }
 }

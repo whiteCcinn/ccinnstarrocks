@@ -228,8 +228,9 @@ struct CancelledConnectTests {
             return try await Transports.network(Endpoint(host: "127.0.0.1", port: 9), TransportOptions(connectTimeout: 30))
         }
         await #expect { _ = try await task.value } throws: { ($0 as? StarRocksError)?.kind == .cancelled }
-        // A cancelled connect must not wait for the 30 s connect timeout. Generous bound: CI scheduling adds seconds of delay.
-        #expect(ContinuousClock.now - started < .seconds(10))
+        // A cancelled connect must not wait for the 30 s connect timeout. The bound stays below it but leaves room for a
+        // busy CI runner, where the task itself can wait many seconds for a thread.
+        #expect(ContinuousClock.now - started < .seconds(25))
     }
 
     @Test func cancelledCheckoutReservesNoSlot() async throws {

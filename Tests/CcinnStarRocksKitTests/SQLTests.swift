@@ -62,7 +62,12 @@ struct SQLLexerTests {
         #expect(kinds("select .5").last?.0 == .number)
     }
 
-    @Test func randomInputNeverCrashes() {
+    @Test func randomInputNeverCrashes() async {
+        // Tens of seconds in a debug build on CI: on a thread of its own, so the rest of the suite keeps its threads.
+        await onDedicatedThread { Self.fuzzLexerSplitterLimitAndCompletion() }
+    }
+
+    private static func fuzzLexerSplitterLimitAndCompletion() {
         let alphabet = Array("select from 'x' \"y\" `z` -- # /* */ ; . , ( ) @ 0x1F 1e9 吉 \\ \n")
         var generator = SystemRandomNumberGenerator()
         for _ in 0..<2_000 {
