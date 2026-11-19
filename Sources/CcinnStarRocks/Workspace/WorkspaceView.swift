@@ -111,6 +111,7 @@ struct TabContentView: View {
         case let .object(model): ObjectDetailView(model: model)
         case let .sql(model): SQLWorkbenchView(model: model)
         case let .operations(model): OperationsView(model: model)
+        case let .knowledge(model): KnowledgeTabView(model: model)
         }
     }
 }

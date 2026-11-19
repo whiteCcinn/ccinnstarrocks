@@ -15,6 +15,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case object(ObjectDetailModel)
         case sql(SQLTabModel)
         case operations(OperationsModel)
+        case knowledge(KnowledgeTabModel)
     }
 
     let id = UUID()
@@ -27,6 +28,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): model.object.name
         case let .sql(model): model.title
         case .operations: "Operations"
+        case let .knowledge(model): model.title
         }
     }
 
@@ -35,6 +37,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): model.object.database
         case let .sql(model): model.database
         case .operations: nil
+        case let .knowledge(model): model.key.database
         }
     }
 
@@ -43,6 +46,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): Theme.icon(for: model.object.kind)
         case .sql: "chevron.left.forwardslash.chevron.right"
         case .operations: "waveform.path.ecg"
+        case .knowledge: "books.vertical"
         }
     }
 }
@@ -305,6 +309,20 @@ final class WorkspaceModel {
         return model
     }
 
+    /// The knowledge tab of a database (one per database).
+    func openKnowledge(database: String) {
+        if let existing = tabs.first(where: { (tab: WorkspaceTab) -> Bool in
+            if case let .knowledge(model) = tab.kind { return model.key.database == database }
+            return false
+        }) {
+            selectedTabID = existing.id
+            return
+        }
+        let tab = WorkspaceTab(kind: .knowledge(KnowledgeTabModel(workspace: self, database: database)))
+        tabs.append(tab)
+        selectedTabID = tab.id
+    }
+
     func openOperations(section: OperationsModel.Section = .running) {
         if let model = selectOperationsTab() {
             model.section = section
@@ -368,6 +386,7 @@ final class WorkspaceModel {
         switch tab.kind {
         case let .sql(model): model.close()
         case let .operations(model): model.close()
+        case let .knowledge(model): model.stopWatching()
         case .object: break
         }
     }

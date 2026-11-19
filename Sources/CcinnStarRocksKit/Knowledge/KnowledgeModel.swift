@@ -348,7 +348,7 @@ public struct TableReference: Codable, Sendable, Hashable, Comparable {
 
 /// How rows of two tables relate, with every piece of evidence for (or against) it. Confidence is computed from the
 /// evidence when read (`RelationshipConfidence`), never stored.
-public struct Relationship: Codable, Sendable, Equatable {
+public struct Relationship: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: String, Codable, Sendable {
         case manyToOne, oneToOne, manyToMany
         /// The same key in two tables with no table that owns it.

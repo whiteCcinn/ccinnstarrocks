@@ -47,6 +47,12 @@ struct MCPSettingsView: View {
                             Text("Read-only AI access refuses accounts with administrator privileges (root, cluster_admin, user_admin, db_admin, system privileges, grant options), because read-only checks cannot stop them. Allow it only for an account you would let the AI administer.")
                         }
                         .padding(.leading, 17)
+                        Toggle(isOn: Binding(get: { profile.mcpKnowledgeWrites },
+                                             set: { store.setMCPKnowledgeWrites($0, for: profile) })) {
+                            Text("AI may write knowledge")
+                            Text("Lets AI sessions add notes, relationships, glossary terms and project links to this Mac's knowledge base. It never changes the cluster, so it works with read-only access too.")
+                        }
+                        .padding(.leading, 17)
                     }
                 }
                 Text("Read-only allows metadata tools and SELECT / SHOW / DESC / EXPLAIN, at most 1,000 rows per call; it never reads other sessions' SQL, credentials or files on the servers. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")

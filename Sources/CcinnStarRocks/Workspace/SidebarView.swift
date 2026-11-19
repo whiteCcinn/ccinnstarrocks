@@ -113,6 +113,9 @@ private struct DatabaseRow: View {
             .contextMenu {
                 Button("New Query") { workspace.openSQL(database: database, catalog: workspace.selectedCatalog) }
                 Button("Refresh") { workspace.loadObjects(database: database, force: true) }
+                if workspace.selectedCatalog == SQLText.defaultCatalog {
+                    Button("Knowledge") { workspace.openKnowledge(database: database) }
+                }
                 Divider()
                 Button("Loads") { workspace.openLoads(database: database) }
                 Button("Schema Changes") { workspace.openOperations(section: .schemaChanges) }
