@@ -91,6 +91,7 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - Optional confirmation before statements that change data or schema. Statements that change cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`) are always confirmed.
 - **AI access through MCP.** A built-in Model Context Protocol server lets Claude Code, Codex and Claude Desktop query the connections you opt in, read-only by default. See [MCP server](#mcp-server-let-ai-query-starrocks).
 - **A knowledge base the AI builds once and reuses.** Per database: how tables relate (from declared constraints, view definitions, your query history, names, and the code your AI reads), notes, a glossary in any language, subject areas and ER diagrams, linked to your local projects. Later sessions answer from it instead of rediscovering the schema. See [Knowledge base](#knowledge-base).
+- **Move to another Mac in one step.** File ▸ Export Settings and Knowledge… writes one file with your connections, the knowledge base and its linked projects, settings and, if you like, query history; passwords only when you seal them with a passphrase. Import shows what will change before anything is written, and can be undone. See [Moving to another Mac](#moving-to-another-mac).
 - **Secure by default.** Passwords live in the macOS Keychain; nothing is collected or sent anywhere unless you enable AI access.
 
 ## Compatibility
@@ -155,6 +156,29 @@ Useful shortcuts:
 | **⇧⌘N** | New window with this connection |
 | **⇧⌘R** | Refresh the catalog |
 | **⇧⌘D** | Disconnect |
+
+## Moving to another Mac
+
+**File ▸ Export Settings and Knowledge…** (also in **Settings → General → Backup**) writes a single `.ccinnstarrocks-backup` file, readable only by you:
+
+| Part | Included | Notes |
+|---|---|---|
+| Connections | always | host, port, user, catalog, SSH route, AI access; never SSH key files |
+| Knowledge and linked projects | on | relationships, notes, glossary, subject areas; project paths under your home are written `~/…` |
+| App settings | on | appearance, automatic `LIMIT`, SQL formatting, update checks; never window positions |
+| Query history | off | statements with passwords removed; they may still contain table names and literal values |
+| Passwords and SSH secrets | off | only with a passphrase (at least 12 characters, entered twice) |
+
+**Passwords** are encrypted with AES-256-GCM under a key derived from your passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations), and the passphrase also authenticates the whole file. It is never stored: lose it and the passwords cannot be recovered, but everything else still imports.
+
+On the other Mac, **File ▸ Import Settings and Knowledge…** opens the file, asks for the passphrase (or imports without passwords), and shows a preview before writing anything:
+
+- **Connections**: new, unchanged, or different from the one here. For a difference choose *Keep mine*, *Use imported* or *Keep both*; the newer edit is suggested. Changes that weaken security are highlighted (another server or SSH route, more AI access, clear-text passwords, no confirmation before changes, an administrator-account opt-in), and from a file without a passphrase, which anyone could have written, they keep your current setting unless you choose otherwise. AI access to an administrator account is only ever taken from a passphrase-verified file.
+- **Knowledge** merges item by item: nothing here is lost, deletions recorded in the backup are applied, and the newer copy of a note or term wins.
+- **Projects** that are not on this Mac are marked. Point one at a folder, or move them all at once (`/Volumes/Work/code` → `~/code`).
+- **Settings** show old → new, each one optional; **history** shows how many statements each connection gains.
+
+Importing first saves your current setup (without passwords) to `Backups/` in the app's data folder, keeping the last five. The report offers **Restore Pre-Import Snapshot**, which undoes exactly what the import wrote: connections it added or replaced, knowledge, history entries and settings. Connections you add or queries you run afterwards are kept; passwords it replaced cannot be put back. Importing the same file again changes nothing. After an import that changed connections, restart the MCP server in your AI clients (`/mcp` in Claude Code) so they see them.
 
 ## MCP server: let AI query StarRocks
 
