@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-19
+
 ### Added
 
 - **A knowledge base the AI builds once and every session reuses**, one per database, shared by every connection that reaches the cluster:
@@ -206,7 +208,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.4...v1.4.0
 [1.3.4]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.2...v1.3.3

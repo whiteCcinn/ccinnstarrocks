@@ -6,7 +6,7 @@ Security fixes are released for the latest minor version of CcinnStarRocks.
 
 | Version | Supported |
 |---|---|
-| 1.4.x | ✅ |
+| 1.5.x | ✅ |
 
 ## Reporting a vulnerability
 
