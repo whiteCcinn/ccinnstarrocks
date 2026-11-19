@@ -47,6 +47,9 @@ public struct StarRocksMCPTools: MCPToolProvider {
     public let audit: MCPAuditLog?
     /// Reads the account's privileges; checked on every tool call of a read-only connection.
     public let privilegeInspector: PrivilegeInspector
+    /// Knowledge tools are offered when set.
+    public let knowledge: KnowledgeToolSettings?
+    let visibilityCache = KnowledgeVisibilityCache()
 
     public static let defaultRowLimit = 200
     public static let maxRowLimit = 1_000
@@ -54,11 +57,28 @@ public struct StarRocksMCPTools: MCPToolProvider {
     public static let maxTimeout = 120.0
 
     public init(resolver: MCPProfileResolver, registry: MCPClientRegistry, audit: MCPAuditLog?,
-                privilegeInspector: @escaping PrivilegeInspector = { try await AccountPrivileges.inspect($0) }) {
+                privilegeInspector: @escaping PrivilegeInspector = { try await AccountPrivileges.inspect($0) },
+                knowledge: KnowledgeToolSettings? = nil) {
         self.resolver = resolver
         self.registry = registry
         self.audit = audit
         self.privilegeInspector = privilegeInspector
+        self.knowledge = knowledge
+    }
+
+    /// Knowledge write tools exist when some enabled connection lets AI write knowledge.
+    var knowledgeWritesAvailable: Bool {
+        guard let knowledge, !knowledge.writesDisabled else { return false }
+        return resolver.enabledProfiles.contains { $0.mcpKnowledgeWrites }
+    }
+
+    public func prompts() async -> [MCPPrompt] {
+        knowledge == nil ? [] : KnowledgeMCP.prompts
+    }
+
+    public func prompt(name: String, arguments: [String: String]) async throws -> MCPPromptText {
+        guard knowledge != nil else { throw MCPToolError("Unknown prompt “\(name)”.") }
+        return try KnowledgeMCP.prompt(name: name, arguments: arguments)
     }
 
     // MARK: Definitions
@@ -130,6 +150,11 @@ public struct StarRocksMCPTools: MCPToolProvider {
                                                            "timeout_seconds": ["type": "number", "minimum": 1, "maximum": .int(Int64(Self.maxTimeout))]],
                                                           required: ["sql"]), readOnly: false, destructive: true, idempotent: false))
         }
+        if knowledge != nil {
+            tools += KnowledgeMCP.tools(writes: knowledgeWritesAvailable) { (properties: [String: JSONValue], required: [String]) -> JSONValue in
+                Self.schema(properties, required: required)
+            }
+        }
         return tools
     }
 
@@ -151,12 +176,21 @@ public struct StarRocksMCPTools: MCPToolProvider {
         var connection: String?
         var statement: String?
         var rows: Int?
+        /// The MCP client's name (`clientInfo.name`).
+        var client: String?
+        /// What a knowledge write changed, for the audit log.
+        var detail: String?
     }
 
     public func call(name: String, arguments: [String: JSONValue]) async -> MCPToolResult {
+        await call(name: name, arguments: arguments, context: MCPCallContext())
+    }
+
+    public func call(name: String, arguments: [String: JSONValue], context client: MCPCallContext) async -> MCPToolResult {
         let clock = ContinuousClock()
         let started = clock.now
         let context = CallContext()
+        context.client = client.clientName
         let result: MCPToolResult
         do {
             result = .success(try await dispatch(name, Arguments(arguments), context))
@@ -170,7 +204,7 @@ public struct StarRocksMCPTools: MCPToolProvider {
         let elapsed = clock.now - started
         let milliseconds = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
         await audit?.record(tool: name, connection: context.connection, statement: context.statement, durationMilliseconds: milliseconds,
-                            rows: context.rows, error: result.isError ? result.payload.stringValue : nil)
+                            rows: context.rows, error: result.isError ? result.payload.stringValue : nil, client: context.client, detail: context.detail)
         return result
     }
 
@@ -217,6 +251,9 @@ public struct StarRocksMCPTools: MCPToolProvider {
             }
             return try await execute(client, args, context, profile: resolved.profile)
         default:
+            if let knowledge, KnowledgeMCP.readTools.contains(name) || KnowledgeMCP.writeTools.contains(name) {
+                return try await knowledgeCall(name, args, client, resolved.profile, context, knowledge)
+            }
             throw MCPToolError("Unknown tool “\(name)”.")
         }
     }
