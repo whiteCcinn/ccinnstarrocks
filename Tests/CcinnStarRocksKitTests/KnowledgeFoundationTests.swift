@@ -151,3 +151,13 @@ struct KnowledgeProfileFieldTests {
         #expect(QueryHistoryStore.defaultDirectory == ProfileRepository.defaultDirectory.appendingPathComponent("History", isDirectory: true))
     }
 }
+
+@Suite("Table reference depth")
+struct TableReferenceDepthTests {
+    @Test func deepNestingStopsInsteadOfOverflowing() {
+        let sql = String(repeating: "SELECT * FROM (", count: 5_000) + "SELECT 1" + String(repeating: ") t", count: 5_000)
+        let lexer = SQLLexer(sql)
+        let scopes = SQLTableReferences.scopes(tokens: lexer.tokens(), lexer: lexer)
+        #expect(scopes.count == SQLTableReferences.maxScopeDepth + 1)
+    }
+}

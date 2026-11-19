@@ -22,8 +22,8 @@ public struct KnowledgeToolSettings: Sendable {
 
     public init(store: KnowledgeStore = KnowledgeStore(), historyDirectory: URL = QueryHistoryStore.defaultDirectory, writesDisabled: Bool = false,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser, visibleTables: @escaping VisibilityCheck = KnowledgeMCP.liveVisibility,
-                confidence: @escaping @Sendable (Relationship) -> Int = KnowledgeMCP.evidenceConfidence,
-                infer: @escaping Inference = { _ in [] }, now: @escaping @Sendable () -> Date = { Date() }) {
+                confidence: @escaping @Sendable (Relationship) -> Int = { RelationshipConfidence.score($0) },
+                infer: @escaping Inference = KnowledgeInference.machineRelationships, now: @escaping @Sendable () -> Date = { Date() }) {
         self.store = store
         self.historyDirectory = historyDirectory
         self.writesDisabled = writesDisabled

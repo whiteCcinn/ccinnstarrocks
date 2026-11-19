@@ -107,3 +107,35 @@ struct KnowledgeServiceTests {
         #expect(try store.database(key)?.relationships.first?.fingerprints["report"] != nil)
     }
 }
+
+@Suite("Knowledge inference wiring")
+struct KnowledgeInferenceWiringTests {
+    @Test func everyMachineSourceContributes() throws {
+        func object(_ name: String, _ kind: ObjectKind, properties: [String: String] = [:]) -> DatabaseObject {
+            var object = DatabaseObject(catalog: "default_catalog", database: "adx", name: name, kind: kind)
+            object.properties = properties
+            return object
+        }
+        func column(_ name: String, key: Bool = false) -> ColumnInfo {
+            ColumnInfo(name: name, ordinal: 1, dataType: "bigint", columnType: "bigint", isNullable: !key, isKey: key)
+        }
+        let schema = ExtractedSchema(database: "adx", serverVersion: nil, clusterHints: nil, tables: [
+            ExtractedTable(object: object("report_adx_hour", .table, properties: ["foreign_key_constraints": "(app_id) REFERENCES app(id)"]),
+                           columns: [column("dsp_id"), column("app_id")], definition: nil),
+            ExtractedTable(object: object("dsp", .table), columns: [column("id", key: true)], definition: nil),
+            ExtractedTable(object: object("app", .table), columns: [column("id", key: true)], definition: nil),
+            ExtractedTable(object: object("v_report", .view), columns: [column("dsp_id")],
+                           definition: "SELECT r.dsp_id FROM report_adx_hour r JOIN dsp d ON r.dsp_id = d.id"),
+        ])
+        var knowledge = DatabaseKnowledge(key: key)
+        var report = KnowledgeRefresher.Report()
+        KnowledgeRefresher.updateTables(schema, in: &knowledge, now: now, report: &report)
+        let history = [QueryHistoryEntry(id: UUID(), sql: "SELECT * FROM report_adx_hour r JOIN dsp d ON r.dsp_id = d.id WHERE r.dt = '2026-11-19'",
+                                         database: "adx", executedAt: now, durationMilliseconds: 10, rowCount: 1, affectedRows: nil, errorMessage: nil)]
+        let machine = KnowledgeInference.machineRelationships(KnowledgeInferenceInput(schema: schema, knowledge: knowledge, history: history, now: now))
+        let sources = Set(machine.flatMap { $0.evidence.map(\.source) })
+        #expect(sources.isSuperset(of: [.declared, .naming, .history, .definition]), "\(sources)")
+        let declared = try #require(machine.first { $0.evidence.contains { $0.source == .declared } })
+        #expect(declared.from.table == "report_adx_hour" && declared.to.table == "app" && declared.to.columns == ["id"])
+    }
+}

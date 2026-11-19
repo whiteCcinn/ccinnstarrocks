@@ -42,29 +42,34 @@ public enum SQLTableReferences {
                        ctes: cteColumns(tokens: tokens, words: words, lexer: lexer))
     }
 
+    /// Subqueries nested deeper than this are not split into scopes of their own (their tables are simply not seen),
+    /// so a pathological paste cannot exhaust the stack.
+    public static let maxScopeDepth = 64
+
     /// The statement's SELECT blocks in document order, each enclosing block before the blocks inside it.
     public static func scopes(tokens: [SQLToken], lexer: SQLLexer) -> [Scope] {
         let words = keywords(tokens, lexer)
         let ctes = cteColumns(tokens: tokens, words: words, lexer: lexer)
         var scopes: [Scope] = []
-        func build(_ range: Range<Int>, parent: Int?) {
+        func build(_ range: Range<Int>, parent: Int?, depth: Int) {
             let references = collect(tokens: tokens, words: words, range: range, lexer: lexer, descend: false, ctes: ctes)
             let current = scopes.count
             scopes.append(Scope(range: range, parent: parent, references: references))
+            guard depth < maxScopeDepth else { return }
             var index = range.lowerBound
             while index < range.upperBound {
                 let opensSubquery = isPunctuation(tokens[index], "(", lexer) && index + 1 < range.upperBound
                     && (words[index + 1] == "SELECT" || words[index + 1] == "WITH")
                 if opensSubquery {
                     let close = min(matchingParen(tokens: tokens, open: index, lexer: lexer), range.upperBound)
-                    build((index + 1)..<close, parent: current)
+                    build((index + 1)..<close, parent: current, depth: depth + 1)
                     index = close + 1
                 } else {
                     index += 1
                 }
             }
         }
-        build(tokens.indices, parent: nil)
+        build(tokens.indices, parent: nil, depth: 0)
         return scopes
     }
 
