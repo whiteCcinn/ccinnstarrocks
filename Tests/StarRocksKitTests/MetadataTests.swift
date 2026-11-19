@@ -143,3 +143,19 @@ struct InsightParsingTests {
         #expect(node.fields.count == 6)
     }
 }
+
+@Suite("Knowledge metadata")
+struct KnowledgeMetadataTests {
+    @Test func clusterHintsFromFrontends() {
+        let rows = records(["Name", "IP", "EditLogPort", "ClusterId", "Role"],
+                           [["fe1", "10.0.0.5", "9010", "1234567", "LEADER"], ["fe2", "10.0.0.6", "9010", "1234567", "FOLLOWER"]])
+        #expect(ClusterHints.parse(rows) == ClusterHints(clusterID: "1234567", frontendHosts: ["10.0.0.5", "10.0.0.6"]))
+        #expect(ClusterHints.parse(records(["Host"], [["FE.Example"]])) == ClusterHints(clusterID: nil, frontendHosts: ["fe.example"]))
+        #expect(ClusterHints.parse(records(["Name"], [["fe1"]])) == nil)
+    }
+
+    @Test func viewDefinitionsByName() {
+        let rows = records(["TABLE_NAME", "VIEW_DEFINITION"], [["v_paid", "SELECT * FROM orders WHERE status = 'paid'"], ["v_empty", ""], [nil, "x"]])
+        #expect(StarRocksClient.viewDefinitions(rows) == ["v_paid": "SELECT * FROM orders WHERE status = 'paid'"])
+    }
+}
