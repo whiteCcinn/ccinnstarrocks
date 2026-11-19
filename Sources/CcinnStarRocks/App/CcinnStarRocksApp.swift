@@ -198,6 +198,7 @@ enum LaunchArguments {
                         workspace.openObject(object, section: section)
                     }
                 }
+                if let database = value("--knowledge") { workspace.openKnowledge(database: database) }
                 if let sql = value("--sql") {
                     let model = workspace.openSQL(text: sql.replacingOccurrences(of: "\\n", with: "\n"), database: value("--database"))
                     if arguments.contains("--format") {
