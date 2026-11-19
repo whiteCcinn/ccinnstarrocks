@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-19
+
+### Fixed
+
+- **An AI refresh through an account that reads part of a database no longer marks the rest dropped.** `information_schema` lists only what the account may read, so `refresh_knowledge` (or the first-use build) through such a connection marked every other table dropped, removed the relationships inferred for them and marked their notes stale. A refresh through MCP now updates what the account sees and leaves the rest as it was, including views and materialized views whose definition it cannot read; only **Refresh** in the app marks tables dropped.
+- **Linking a project reads its git remote safely.** `.git/config` is read only when it is a regular file of at most 64 KB, without following links or blocking, and before the knowledge files are locked: a huge or special file in a folder an AI links no longer holds up other knowledge writes.
+
 ## [1.5.0] - 2026-11-19
 
 ### Added
@@ -208,7 +215,8 @@ First public release.
 - MCP server (`CcinnStarRocks mcp`) so AI clients such as Claude Code, Codex and Claude Desktop can list connections, explore catalogs, inspect partitions, tablet skew and materialized views, see running tasks and run read-only queries on connections the user opted in; read & write access is opt-in per connection, and every call is audited.
 - Operations: what is running now (queries, loads, MV refreshes and tasks, routine loads, schema changes), sessions with kill, loads, routine loads with pause / resume / stop, task runs, schema-change jobs and FE / BE / CN nodes.
 
-[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.4...v1.4.0
 [1.3.4]: https://github.com/whiteCcinn/ccinnstarrocks/compare/v1.3.3...v1.3.4
