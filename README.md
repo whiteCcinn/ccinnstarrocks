@@ -249,7 +249,7 @@ StarRocks has no foreign keys, so the joins that matter (`report_adx_hour.dsp_id
 - `execute_statement` never changes cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`): those need a confirmation in the app.
 - `--read-only` caps every connection at read-only; `--profile <name>` picks the default connection.
 - Every call is logged to `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`, with the AI client's name and, for knowledge writes, what changed.
-- **Knowledge follows the account.** An AI sees knowledge only for connections with AI access, and only the databases and tables that connection's account can see, even when the knowledge was built through a more privileged connection.
+- **Knowledge follows the account.** An AI sees knowledge only for connections with AI access, and only the databases and tables that connection's account can see, even when the knowledge was built through a more privileged connection. A refresh an AI runs through such an account updates what it sees and leaves the rest as it was; only a Refresh in the app marks tables dropped.
 - **Knowledge holds no data.** No rows, sample values, DDL or code are stored: structure, relationships with evidence (paths, lines, symbols, SQL digests with literals replaced) and notes. Database comments, notes and glossary text reach the AI marked as untrusted data, not instructions.
 - **Who may write.** AI writes only local knowledge files, never the cluster, so it is allowed on read-only connections; turn it off per connection with **Settings → MCP → AI may write knowledge**, or for the whole server with `--no-knowledge-writes`. AI can never change or remove what you wrote, confirmed or rejected.
 

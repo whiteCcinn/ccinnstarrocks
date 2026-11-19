@@ -191,7 +191,9 @@ extension StarRocksMCPTools {
         let history = mineHistory
             ? await KnowledgeService.history(for: key.cluster, profiles: resolver.profiles, directory: settings.historyDirectory, store: settings.store)
             : []
-        return try await KnowledgeService.refresh(key, source: client, store: settings.store, history: history, infer: settings.infer, now: settings.now())
+        // An AI session's account may see part of the database: what it cannot see is left as it was (`partial`).
+        return try await KnowledgeService.refresh(key, source: client, store: settings.store, history: history, infer: settings.infer, now: settings.now(),
+                                                  partial: true)
     }
 
     // MARK: Payloads
@@ -332,6 +334,8 @@ extension StarRocksMCPTools {
         let databaseID = key.fileID
         let projectID = KnowledgeMCP.projectID(path: path)
         let now = settings.now()
+        let expanded = KnowledgeMCP.expand(path, home: settings.home)
+        let remote: String? = unlink ? nil : KnowledgeMCP.gitRemote(of: expanded) // outside the lock
         try settings.store.updateIndex { index in
             if !index.databases.contains(where: { $0.key == key }) { index.databases.append(KnowledgeIndex.DatabaseEntry(key: key)) }
             if !index.clusters.contains(where: { $0.key == key.cluster || $0.aliases.contains(key.cluster) }) {
@@ -342,9 +346,8 @@ extension StarRocksMCPTools {
                 return
             }
             if !index.projects.contains(where: { $0.id == projectID }) {
-                let expanded = KnowledgeMCP.expand(path, home: settings.home)
                 let name = args.string("name").map { KnowledgeMCP.clean($0, limit: 120) } ?? URL(fileURLWithPath: expanded).lastPathComponent
-                index.projects.append(KnowledgeIndex.Project(id: projectID, path: path, name: name, gitRemote: KnowledgeMCP.gitRemote(of: expanded),
+                index.projects.append(KnowledgeIndex.Project(id: projectID, path: path, name: name, gitRemote: remote,
                                                              addedAt: now, addedBy: by))
             }
             if !index.links.contains(where: { $0.project == projectID && $0.database == databaseID }) {

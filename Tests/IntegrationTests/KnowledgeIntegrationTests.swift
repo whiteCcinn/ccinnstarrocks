@@ -7,6 +7,39 @@ import Testing
 /// on StarRocks 3.3 and 4.1.
 @Suite("Knowledge on StarRocks", .enabled(if: IntegrationEnvironment.isEnabled), .serialized)
 struct KnowledgeIntegrationTests {
+    // An AI session's account may read part of a database: its refresh must not drop what information_schema hides
+    // from it.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func aRestrictedAccountsRefreshKeepsWhatItCannotSee(target: IntegrationEnvironment.Target) async throws {
+        let admin = try await IntegrationEnvironment.client(target)
+        defer { Task { await admin.close() } }
+        let store = KnowledgeStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("ccinn-kb-it-\(UUID().uuidString)", isDirectory: true))
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let key = DatabaseKey(cluster: ClusterKey(rawValue: "sr://it:\(target.label)"), catalog: SQLText.defaultCatalog, database: "kb_demo")
+        _ = try await KnowledgeService.refresh(key, source: admin, store: store, history: [], infer: KnowledgeInference.machineRelationships, now: Date())
+        let full = try #require(try store.database(key))
+        let reader = "ccinn_it_kb_\(String(UInt32.random(in: 0...UInt32.max), radix: 36))"
+        _ = try await admin.execute("CREATE USER '\(reader)'@'%'")
+        do {
+            _ = try await admin.execute("GRANT SELECT ON TABLE kb_demo.dsp TO USER '\(reader)'@'%'")
+            let restricted = try await IntegrationEnvironment.client(target, user: reader)
+            let visible = try await restricted.objects(catalog: SQLText.defaultCatalog, database: "kb_demo")
+            #expect(visible.count < full.tables.count, "information_schema shows the account part of the database: \(visible.map(\.name))")
+            let report = try await KnowledgeService.refresh(key, source: restricted, store: store, history: [],
+                                                            infer: KnowledgeInference.machineRelationships, now: Date(), partial: true)
+            await restricted.close()
+            let after = try #require(try store.database(key))
+            #expect(after.tables.map(\.name) == full.tables.map(\.name) && after.tables.allSatisfy { $0.state != .dropped })
+            #expect(after.tables.map(\.fingerprint) == full.tables.map(\.fingerprint))
+            #expect(Set(full.relationships.map(\.id)).isSubset(of: Set(after.relationships.map(\.id))), "relationships it cannot see stay")
+            #expect(report.tables.dropped == 0 && report.relationships.removed == 0)
+        } catch {
+            _ = try? await admin.execute("DROP USER '\(reader)'@'%'")
+            throw error
+        }
+        _ = try? await admin.execute("DROP USER '\(reader)'@'%'")
+    }
+
     @Test(arguments: IntegrationEnvironment.targets)
     func refreshInfersAndAnswers(target: IntegrationEnvironment.Target) async throws {
         let client = try await IntegrationEnvironment.client(target)

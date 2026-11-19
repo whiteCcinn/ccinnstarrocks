@@ -262,7 +262,7 @@ StarRocks 没有外键，真正关键的关联（如 `report_adx_hour.dsp_id` �
 - `execute_statement` 不会修改集群配置（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`），这类修改必须在应用内二次确认。
 - `--read-only` 把所有连接限制为只读；`--profile <名称>` 指定默认连接。
 - 每次调用都会记录到 `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`，包含 AI 客户端名称；写入知识库时还会记录改了什么。
-- **知识库跟随账号权限。** AI 只能看到已开启 AI 访问的连接的知识库，并且只包含该连接账号能看到的数据库和表——即使知识库是通过权限更高的连接建立的。
+- **知识库跟随账号权限。** AI 只能看到已开启 AI 访问的连接的知识库，并且只包含该连接账号能看到的数据库和表——即使知识库是通过权限更高的连接建立的。AI 通过这类账号刷新时，只更新它能看到的部分，其余保持原样；只有在应用中点 Refresh 才会把表标记为已删除。
 - **知识库不存数据。** 不保存数据行、样例值、DDL 或代码：只有结构、带证据的关系（路径、行号、符号、字面量已替换的 SQL 摘要）和说明。数据库注释、说明和术语文本以「不可信数据」的标注交给 AI，而不是指令。
 - **谁可以写。** AI 只写本机的知识库文件，从不改动集群，因此只读连接也允许写；可在 **Settings → MCP → AI may write knowledge** 按连接关闭，或用 `--no-knowledge-writes` 对整个服务关闭。你写下、确认或否定的内容，AI 永远无法修改或删除。
 

@@ -47,26 +47,49 @@ public enum KnowledgeRefresher {
 
     /// Applies the extraction and the machine relationships inferred from it. Lineage relationships are derived here from
     /// the views' and materialized views' facts.
+    ///
+    /// `partial`: the extraction came through an account that may see less than the knowledge holds (an AI session's
+    /// connection; `information_schema` lists only what it may read). Tables it does not list are not dropped, a table it
+    /// sees only some columns of or a view or materialized view whose definition it cannot read is left as it was,
+    /// relationships with an end it did not see keep their evidence, and the report counts only what it saw. Only the
+    /// user's refresh in the app marks tables dropped.
     @discardableResult
-    public static func apply(_ schema: ExtractedSchema, machineRelationships: [Relationship], to knowledge: inout DatabaseKnowledge, now: Date) -> Report {
+    public static func apply(_ schema: ExtractedSchema, machineRelationships: [Relationship], to knowledge: inout DatabaseKnowledge, now: Date,
+                             partial: Bool = false) -> Report {
         var report = Report()
-        updateTables(schema, in: &knowledge, now: now, report: &report)
+        let seen = updateTables(schema, in: &knowledge, now: now, report: &report, partial: partial)
         if let version = schema.serverVersion { knowledge.serverVersion = version }
         knowledge.refreshedAt = now
-        mergeMachineRelationships(machineRelationships + lineageRelationships(knowledge.tables, now: now), into: &knowledge, report: &report)
-        report.relationships.nowStale = knowledge.relationships.filter { KnowledgeFreshness.isStale($0, in: knowledge) }.count
-        report.notesStale = knowledge.notes.filter { KnowledgeFreshness.isStale($0, in: knowledge) }.count
+        let scope: Set<String>? = partial ? seen : nil
+        mergeMachineRelationships(machineRelationships + lineageRelationships(knowledge.tables, now: now), into: &knowledge, report: &report, scope: scope)
+        let inScope = { (relationship: Relationship) -> Bool in isInScope(relationship, scope) }
+        report.relationships.nowStale = knowledge.relationships.filter { inScope($0) && KnowledgeFreshness.isStale($0, in: knowledge) }.count
+        report.notesStale = knowledge.notes.filter { (scope?.contains($0.table) ?? true) && KnowledgeFreshness.isStale($0, in: knowledge) }.count
         return report
+    }
+
+    /// Whether every end of `relationship` in this database is among `scope` (every relationship when `scope` is nil).
+    static func isInScope(_ relationship: Relationship, _ scope: Set<String>?) -> Bool {
+        guard let scope else { return true }
+        return [relationship.from, relationship.to].allSatisfy { $0.database != nil || scope.contains($0.table) }
     }
 
     // MARK: Tables
 
-    static func updateTables(_ schema: ExtractedSchema, in knowledge: inout DatabaseKnowledge, now: Date, report: inout Report) {
+    /// Returns the names of the tables the extraction saw.
+    @discardableResult
+    static func updateTables(_ schema: ExtractedSchema, in knowledge: inout DatabaseKnowledge, now: Date, report: inout Report,
+                             partial: Bool = false) -> Set<String> {
         var previous: [String: TableFacts] = [:]
         for table in knowledge.tables { previous[table.name] = table }
         var tables: [TableFacts] = []
         var seen: Set<String> = []
         for extracted in schema.tables {
+            if partial, let old = previous[extracted.object.name], old.state != .dropped, !isFullySeen(extracted, comparedTo: old) {
+                seen.insert(old.name)
+                tables.append(old)
+                continue
+            }
             let facts = tableFacts(extracted, database: schema.database, previous: previous[extracted.object.name], now: now)
             seen.insert(facts.name)
             switch facts.state {
@@ -77,6 +100,11 @@ public enum KnowledgeRefresher {
             tables.append(facts)
         }
         report.tables.total = tables.count
+        if partial {
+            let unseen = knowledge.tables.filter { !seen.contains($0.name) }
+            knowledge.tables = (tables + unseen).sorted { $0.name < $1.name }
+            return seen
+        }
         var dropped: [TableFacts] = []
         for old in knowledge.tables where !seen.contains(old.name) {
             var gone = old
@@ -93,6 +121,22 @@ public enum KnowledgeRefresher {
         }
         report.possibleRenames.sort { $0.joined(separator: "\u{1F}") < $1.joined(separator: "\u{1F}") }
         knowledge.tables = (tables + dropped).sorted { $0.name < $1.name }
+        return seen
+    }
+
+    /// Whether an extraction shows all of an object the knowledge already describes: not for a view or materialized view
+    /// whose definition it cannot read, nor when every column it lists is a known column of the same type but some are
+    /// missing.
+    static func isFullySeen(_ extracted: ExtractedTable, comparedTo old: TableFacts) -> Bool {
+        let readsADefinition: Bool = extracted.object.kind == .view || extracted.object.kind == .asyncMaterializedView
+        if readsADefinition, extracted.definition == nil { return false }
+        guard extracted.columns.count < old.columns.count else { return true }
+        let known = Dictionary(old.columns.map { ($0.name.lowercased(), $0.type.lowercased()) }, uniquingKeysWith: { first, _ in first })
+        let subset = extracted.columns.allSatisfy { (column: ColumnInfo) -> Bool in
+            let type = column.columnType.isEmpty ? column.dataType : column.columnType
+            return known[column.name.lowercased()] == type.lowercased()
+        }
+        return !subset
     }
 
     /// The facts of one extracted object; `previous` decides new / fresh / changed and keeps `firstSeen`.
@@ -177,18 +221,26 @@ public enum KnowledgeRefresher {
 
     // MARK: Relationships
 
-    static func mergeMachineRelationships(_ machine: [Relationship], into knowledge: inout DatabaseKnowledge, report: inout Report) {
+    /// `scope`: for a partial refresh, the tables the extraction saw; relationships with an end outside it keep their
+    /// machine evidence and are not counted.
+    static func mergeMachineRelationships(_ machine: [Relationship], into knowledge: inout DatabaseKnowledge, report: inout Report,
+                                          scope: Set<String>? = nil) {
         let tombstoned = Set(knowledge.tombstones.map(\.id))
         var byID: [String: Relationship] = [:]
         var order: [String] = []
+        var outside: Set<String> = []
         for var relationship in knowledge.relationships {
-            relationship.evidence.removeAll { machineSources.contains($0.source) }
+            if isInScope(relationship, scope) {
+                relationship.evidence.removeAll { machineSources.contains($0.source) }
+            } else {
+                outside.insert(relationship.id)
+            }
             byID[relationship.id] = relationship
             order.append(relationship.id)
         }
         let previousIDs = Set(order)
         let fingerprints = currentFingerprints(knowledge)
-        for incoming in machine where !tombstoned.contains(incoming.id) {
+        for incoming in machine where !tombstoned.contains(incoming.id) && !outside.contains(incoming.id) && isInScope(incoming, scope) {
             var current = fingerprints(incoming)
             if var existing = byID[incoming.id] {
                 existing.evidence += incoming.evidence
@@ -207,9 +259,10 @@ public enum KnowledgeRefresher {
             guard let relationship = byID[id], !relationship.evidence.isEmpty else { continue }
             merged.append(relationship)
         }
-        let mergedIDs = Set(merged.map(\.id))
-        report.relationships.added = mergedIDs.subtracting(previousIDs).count
-        report.relationships.removed = previousIDs.subtracting(mergedIDs).count
+        let mergedIDs = Set(merged.map(\.id)).subtracting(outside)
+        let previousInScope = previousIDs.subtracting(outside)
+        report.relationships.added = mergedIDs.subtracting(previousInScope).count
+        report.relationships.removed = previousInScope.subtracting(mergedIDs).count
         knowledge.relationships = merged
     }
 

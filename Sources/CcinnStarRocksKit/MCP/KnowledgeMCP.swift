@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import StarRocksKit
 
@@ -243,9 +244,11 @@ public enum KnowledgeMCP {
         path.hasPrefix("~") ? home.standardizedFileURL.path + path.dropFirst() : path
     }
 
-    /// The `origin` remote of a git checkout without credentials (`https://user:token@host/…` → `https://host/…`).
+    /// The `origin` remote of a git checkout without credentials (`https://user:token@host/…` → `https://host/…`). The
+    /// file is read only when it is a regular file (not a FIFO, device or symbolic link) of at most 64 KB, without
+    /// blocking: a path an AI session links cannot stall or exhaust the process.
     public static func gitRemote(of directory: String) -> String? {
-        guard let config = try? String(contentsOfFile: directory + "/.git/config", encoding: .utf8) else { return nil }
+        guard let config = readSmallRegularFile(directory + "/.git/config", limit: 65_536) else { return nil }
         var inOrigin = false
         for line in config.split(whereSeparator: \.isNewline) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -258,6 +261,21 @@ public enum KnowledgeMCP {
             return url.isEmpty ? nil : String(url.prefix(300))
         }
         return nil
+    }
+
+    static func readSmallRegularFile(_ path: String, limit: Int) -> String? {
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0, info.st_size <= off_t(limit) else { return nil }
+        var data = Data(count: Int(info.st_size))
+        let count = data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Int in
+            guard let base = buffer.baseAddress else { return 0 }
+            return read(descriptor, base, buffer.count)
+        }
+        guard count >= 0 else { return nil }
+        return String(decoding: data.prefix(count), as: UTF8.self)
     }
 
     public static func projectID(path: String) -> String {

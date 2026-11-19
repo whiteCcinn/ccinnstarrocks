@@ -19,16 +19,17 @@ public enum KnowledgeService {
     // MARK: Refresh
 
     /// Extracts the database, infers machine relationships from this extraction's tables and the history, and saves the
-    /// merged knowledge under the lock.
+    /// merged knowledge under the lock. `partial` (the MCP tools): the account may see part of the database, so what it
+    /// does not see is left as it was (`KnowledgeRefresher.apply`); the app's refresh is full.
     public static func refresh(_ key: DatabaseKey, source: some KnowledgeSchemaSource, store: KnowledgeStore, history: [QueryHistoryEntry],
-                               infer: KnowledgeToolSettings.Inference, now: Date) async throws -> KnowledgeRefresher.Report {
+                               infer: KnowledgeToolSettings.Inference, now: Date, partial: Bool = false) async throws -> KnowledgeRefresher.Report {
         let schema = try await KnowledgeExtractor.extract(database: key.database, from: source)
         var preview = try store.database(key) ?? DatabaseKnowledge(key: key)
         var scratch = KnowledgeRefresher.Report()
-        KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch)
+        KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch, partial: partial)
         let machine = infer(KnowledgeInferenceInput(schema: schema, knowledge: preview, history: history, now: now))
         let report = try store.updateDatabase(key) { knowledge in
-            KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now)
+            KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now, partial: partial)
         }
         if let clusterID = schema.clusterHints?.clusterID {
             try store.updateIndex { index in
@@ -87,15 +88,16 @@ public enum KnowledgeService {
     public static func linkProject(path: String, to key: DatabaseKey, store: KnowledgeStore, home: URL, now: Date) throws -> String {
         let stored = try KnowledgeMCP.projectPath(path, home: home, isDirectory: isDirectory)
         let id = KnowledgeMCP.projectID(path: stored)
+        let expanded = KnowledgeMCP.expand(stored, home: home)
+        let remote = KnowledgeMCP.gitRemote(of: expanded) // outside the lock: a slow disk never holds other writers up
         try store.updateIndex { index in
             if !index.databases.contains(where: { $0.key == key }) { index.databases.append(KnowledgeIndex.DatabaseEntry(key: key)) }
             if !index.clusters.contains(where: { $0.key == key.cluster || $0.aliases.contains(key.cluster) }) {
                 index.clusters.append(KnowledgeIndex.ClusterEntry(key: key.cluster))
             }
             if !index.projects.contains(where: { $0.id == id }) {
-                let expanded = KnowledgeMCP.expand(stored, home: home)
                 index.projects.append(KnowledgeIndex.Project(id: id, path: stored, name: URL(fileURLWithPath: expanded).lastPathComponent,
-                                                             gitRemote: KnowledgeMCP.gitRemote(of: expanded), addedAt: now, addedBy: "user"))
+                                                             gitRemote: remote, addedAt: now, addedBy: "user"))
             }
             if !index.links.contains(where: { $0.project == id && $0.database == key.fileID }) {
                 index.links.append(KnowledgeIndex.Link(project: id, database: key.fileID, addedAt: now, addedBy: "user"))
@@ -111,10 +113,11 @@ public enum KnowledgeService {
     /// Points a project at its new location (another Mac, a moved checkout); its links stay.
     public static func remapProject(id: String, to path: String, store: KnowledgeStore, home: URL) throws {
         let stored = try KnowledgeMCP.projectPath(path, home: home, isDirectory: isDirectory)
+        let remote = KnowledgeMCP.gitRemote(of: KnowledgeMCP.expand(stored, home: home))
         try store.updateIndex { index in
             guard let position = index.projects.firstIndex(where: { $0.id == id }) else { throw Failure.unknownProject(id) }
             index.projects[position].path = stored
-            index.projects[position].gitRemote = KnowledgeMCP.gitRemote(of: KnowledgeMCP.expand(stored, home: home)) ?? index.projects[position].gitRemote
+            index.projects[position].gitRemote = remote ?? index.projects[position].gitRemote
         }
     }
 
