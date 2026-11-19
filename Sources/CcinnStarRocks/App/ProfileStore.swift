@@ -66,24 +66,28 @@ final class ProfileStore {
     func setMCPAccess(_ access: MCPAccess, for profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].mcpAccess = access
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
     func setMCPAllowPrivilegedAccount(_ allowed: Bool, for profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].mcpAllowPrivilegedAccount = allowed
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
     func setMCPKnowledgeWrites(_ allowed: Bool, for profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].mcpKnowledgeWrites = allowed
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
     func toggleFavorite(_ profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].isFavorite.toggle()
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
@@ -91,6 +95,31 @@ final class ProfileStore {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].lastConnectedAt = Date()
         try? persist()
+    }
+
+    /// Adds or replaces the profiles of an import in one save. Their secrets are already in the Keychain. When saving
+    /// fails the list stays as it was.
+    func apply(_ upserts: [ConnectionProfile]) throws {
+        try replace(with: BackupImportApplier.upserting(upserts, into: profiles, updatedAt: Date()))
+    }
+
+    /// Undoes an import: puts back the profiles it replaced and removes the ones it added, with their Keychain items.
+    /// Profiles created or changed since stay as they are.
+    func restore(_ restored: [ConnectionProfile], removing removed: [UUID]) throws {
+        try replace(with: BackupImportApplier.restoring(restored, removing: removed, in: profiles))
+        // Also when the import stopped before saving the profile: its secrets were written first.
+        for id in Set(removed) { try? repository.deleteSecrets(of: id) }
+    }
+
+    private func replace(with updated: [ConnectionProfile]) throws {
+        let previous = profiles
+        profiles = updated
+        do {
+            try persist()
+        } catch {
+            profiles = previous
+            throw error
+        }
     }
 
     func password(for profile: ConnectionProfile) -> String? { repository.password(for: profile) }
@@ -114,4 +143,5 @@ final class AppServices {
 
     let profiles = ProfileStore()
     let historyDirectory = QueryHistoryStore.defaultDirectory
+    private(set) lazy var backup = BackupCenter(stores: .live(profiles: profiles, historyDirectory: historyDirectory))
 }

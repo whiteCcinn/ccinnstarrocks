@@ -22,6 +22,14 @@ struct CcinnStarRocksApp: App {
             UpdateCommands()
         }
 
+        Window("Settings and Knowledge Backup", id: BackupWindow.id) {
+            BackupWindow(center: AppServices.shared.backup)
+                .preferredColorScheme(AppearancePreference(rawValue: appearance)?.colorScheme)
+                .tint(Theme.accent)
+        }
+        .defaultSize(width: 720, height: 640)
+        .windowResizability(.contentMinSize)
+
         Settings {
             SettingsTabs()
             .frame(width: 620)
@@ -102,7 +110,9 @@ struct RootView: View {
         .onDisappear { session.disconnect() }
         .task {
             if let request, session.connect(request, store: store) { return }
-            LaunchArguments.consume(into: session, store: store) { openWindow(id: Self.windowGroupID, value: $0) }
+            LaunchArguments.consume(into: session, store: store, openBackup: { BackupCommands.open($0, openWindow: openWindow) }) {
+                openWindow(id: Self.windowGroupID, value: $0)
+            }
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--settings"), arguments.indices.contains(index + 1) {
                 UserDefaults.standard.set(arguments[index + 1], forKey: "settingsTab")
@@ -161,7 +171,8 @@ struct ConnectingView: View {
 enum LaunchArguments {
     private static var consumed = false
 
-    static func consume(into session: WindowSession, store: ProfileStore, openWindow: @escaping @MainActor (WindowRequest) -> Void) {
+    static func consume(into session: WindowSession, store: ProfileStore, openBackup: @MainActor (URL) -> Void,
+                        openWindow: @escaping @MainActor (WindowRequest) -> Void) {
         guard !consumed else { return }
         consumed = true
         let arguments = ProcessInfo.processInfo.arguments
@@ -169,6 +180,8 @@ enum LaunchArguments {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
         }
+        // `--import-backup <file>`: the import preview of a backup, as File ▸ Import would show it.
+        if let path = value("--import-backup") { openBackup(URL(fileURLWithPath: (path as NSString).expandingTildeInPath)) }
         let profile: ConnectionProfile
         var password: String?
         if let name = value("--profile"), let saved = store.profiles.first(where: { $0.displayName == name }) {
@@ -284,6 +297,7 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
     @AppStorage("autoLimit") private var autoLimit = 1000
     @AppStorage("sqlFormatKeywordCase") private var formatKeywordCase = SQLFormatOptions.KeywordCase.upper.rawValue
@@ -313,6 +327,15 @@ struct SettingsView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([ProfileRepository.defaultDirectory])
                 }
             }
+            LabeledContent {
+                HStack {
+                    Button("Export…") { BackupCommands.export(openWindow: openWindow) }
+                    Button("Import…") { BackupCommands.import(openWindow: openWindow) }
+                }
+            } label: {
+                Text("Backup")
+                Text("Connections, knowledge, linked projects and settings, to move to another Mac.")
+            }
             UpdateSettingsSections()
         }
         .formStyle(.grouped)
@@ -333,11 +356,35 @@ extension FocusedValues {
     }
 }
 
+/// Opens the Backup window on the export form or after choosing a file to import. Needs no connection.
+@MainActor
+enum BackupCommands {
+    static func export(openWindow: OpenWindowAction) {
+        AppServices.shared.backup.beginExport()
+        openWindow(id: BackupWindow.id)
+    }
+
+    static func `import`(openWindow: OpenWindowAction) {
+        let center = AppServices.shared.backup
+        guard let url = center.chooseImportFile() else { return }
+        open(url, openWindow: openWindow)
+    }
+
+    static func open(_ url: URL, openWindow: OpenWindowAction) {
+        openWindow(id: BackupWindow.id)
+        Task { await AppServices.shared.backup.open(url) }
+    }
+}
+
 struct AppCommands: Commands {
     @FocusedValue(\.windowSession) private var session
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(replacing: .importExport) {
+            Button("Export Settings and Knowledge…") { BackupCommands.export(openWindow: openWindow) }
+            Button("Import Settings and Knowledge…") { BackupCommands.import(openWindow: openWindow) }
+        }
         CommandGroup(after: .newItem) {
             // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.
             Button("New Window with This Connection") {

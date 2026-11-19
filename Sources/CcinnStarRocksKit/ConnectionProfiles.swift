@@ -288,7 +288,12 @@ public final class ProfileRepository: Sendable {
     }
 
     public func delete(_ profile: ConnectionProfile) throws {
-        try secrets.setSecret(nil, for: SecretKey(profileID: profile.id, kind: .password))
-        try secrets.setSecret(nil, for: SecretKey(profileID: profile.id, kind: .sshSecret))
+        try deleteSecrets(of: profile.id)
+    }
+
+    /// Removes a profile's password and SSH secret from the Keychain.
+    public func deleteSecrets(of profileID: UUID) throws {
+        try secrets.setSecret(nil, for: SecretKey(profileID: profileID, kind: .password))
+        try secrets.setSecret(nil, for: SecretKey(profileID: profileID, kind: .sshSecret))
     }
 }
