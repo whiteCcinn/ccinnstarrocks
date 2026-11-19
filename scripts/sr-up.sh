@@ -41,6 +41,9 @@ for version in "${VERSIONS[@]}"; do
     sleep 10
   done
   if [[ "$seeded" != true ]]; then echo "could not seed $name" >&2; exit 1; fi
+  # Knowledge tests: an ADX-style schema with a declared foreign key and a view.
+  docker cp "$ROOT/scripts/seed-knowledge.sql" "$name:/tmp/seed-knowledge.sql"
+  docker exec "$name" sh -c "mysql -P9030 -h127.0.0.1 -uroot < /tmp/seed-knowledge.sql" >&2 || { echo "could not seed kb_demo in $name" >&2; exit 1; }
   targets+=("${version}=127.0.0.1:${port}")
 done
 

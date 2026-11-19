@@ -503,6 +503,10 @@ private struct StatementQuery {
             let table = path[path.count - 2]
             instance = innermost(from: scope) { (reference: SQLTableReference) -> Bool in
                 reference.alias == nil && reference.table == table && (reference.database == nil || reference.database == database)
+            } ?? innermost(from: scope) { (reference: SQLTableReference) -> Bool in
+                // StarRocks 3.3 prints view definitions with `db`.`alias`.`column`.
+                guard let alias = reference.alias, alias.caseInsensitiveCompare(table) == .orderedSame else { return false }
+                return reference.database == nil || reference.database == database
             }
         default:
             instance = nil

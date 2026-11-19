@@ -139,3 +139,19 @@ struct KnowledgeInferenceWiringTests {
         #expect(declared.from.table == "report_adx_hour" && declared.to.table == "app" && declared.to.columns == ["id"])
     }
 }
+
+@Suite("Join extraction from server-printed definitions")
+struct ServerPrintedDefinitionTests {
+    // StarRocks 3.3's information_schema.views prints `db`.`alias`.`column`.
+    @Test func databaseQualifiedAliases() {
+        let definition = """
+        SELECT `kb_demo`.`r`.`dt`, `kb_demo`.`d`.`name` AS `dsp_name` FROM `kb_demo`.`report_adx_hour` AS `r` \
+        INNER JOIN `kb_demo`.`dsp` AS `d` ON `kb_demo`.`r`.`dsp_id` = `kb_demo`.`d`.`id` GROUP BY `kb_demo`.`r`.`dt`, `kb_demo`.`d`.`name`
+        """
+        let joins = SQLJoinExtractor.joins(in: definition) { _ in nil }
+        #expect(joins.count == 1)
+        let pair = joins.first
+        let tables = Set([pair?.left.table, pair?.right.table].compactMap { $0 })
+        #expect(tables == ["report_adx_hour", "dsp"])
+    }
+}

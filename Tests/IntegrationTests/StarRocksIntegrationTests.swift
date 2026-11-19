@@ -101,7 +101,8 @@ struct StarRocksIntegrationTests {
         defer { Task { await client.close() } }
         #expect(try await client.catalogs().contains { $0.name == "default_catalog" })
         let databases = try await client.databases()
-        #expect(databases.first == "shop")
+        #expect(databases.contains("shop"))
+        #expect(databases.first.map { !["_statistics_", "information_schema", "sys"].contains($0) } == true, "user databases come first")
         let objects = try await client.objects(database: "shop")
         let byName = Dictionary(uniqueKeysWithValues: objects.map { ($0.name, $0) })
         #expect(byName["orders"]?.kind == .table)
