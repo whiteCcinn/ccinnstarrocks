@@ -15,7 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - **MCP knowledge tools**: `list_knowledge`, `knowledge_overview`, `search_knowledge`, `explain_table`, `find_join_path` (join chain, `ON` conditions, SQL skeleton, a warning when rows would multiply), `er_diagram`, `refresh_knowledge`; writes with `link_project`, `add_notes`, `add_relationships`, `define_terms`, `define_subject_area`, `remove_knowledge`. Prompts `build_knowledge` and `answer_with_knowledge`.
 - **Knowledge tab** (right-click a database → Knowledge): refresh, Confirm or Reject inferred relationships, notes and glossary, diagrams (Copy Mermaid), and linked projects (Link, Remap, Unlink). The tab follows writes from AI sessions as they happen.
 - **Settings → MCP → AI may write knowledge**, per connection (on by default), and `mcp --no-knowledge-writes` for the whole server.
-- **Export and import settings and knowledge** (File menu, and Settings → General → Backup): one file with connections, knowledge and linked projects, settings and optionally query history. Passwords only with a passphrase (AES-256-GCM, PBKDF2-HMAC-SHA256 600,000 iterations), which also authenticates the file. Import previews every change with per-connection choices, highlights changes that weaken security, remaps project folders, and saves a snapshot first that *Restore Pre-Import Snapshot* uses to undo exactly what the import wrote. Importing the same file twice changes nothing.
+- **Export and import settings and knowledge** (File menu, and Settings → General → Backup): one file with connections, knowledge and linked projects, settings and optionally query history. Passwords only with a passphrase (AES-256-GCM, PBKDF2-HMAC-SHA256 600,000 iterations), which also authenticates the file. Import previews every change with per-connection choices, highlights changes that weaken security, remaps project folders, and saves a snapshot first that *Restore Pre-Import Snapshot* uses to undo exactly what the import wrote (connections and passwords it added, connections it replaced unless changed since, knowledge, history entries, settings); a restore that stops part-way can be retried. Importing the same file twice changes nothing.
 
 ### Changed
 
@@ -24,7 +24,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
-- Two windows on the same connection overwrote each other's query history: each kept its own copy and wrote it back. A window now rereads the file when another one changed it. History files are private (0600) from the moment they are written.
+- Two windows on the same connection overwrote each other's query history: each kept its own copy and wrote it back. Windows now update the file under a shared lock and reread it when another one changed it. History files are private (0600) from the moment they are written.
 
 ## [1.4.0] - 2026-11-19
 

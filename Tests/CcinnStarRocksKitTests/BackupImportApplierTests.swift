@@ -197,6 +197,134 @@ struct BackupImportApplierTests {
                 "a profile that is gone again keeps no history")
     }
 
+    // Review: a password the import filled in for an unchanged profile is the import's doing, and goes on restore.
+    @Test func restoringRemovesPasswordsTheImportFilledInAndCanRunAgain() throws {
+        let (source, plain, tunnelled) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        target.profiles = [plain]
+        let plan = target.plan(try BackupFormat.decode(try exportAll(source), passphrase: F.passphrase))
+        #expect(plan.profiles.first { $0.id == plain.id }?.status == .unchanged)
+        let report = target.applier().apply(plan, now: F.date(100))
+        #expect(try target.secrets.secret(for: SecretKey(profileID: plain.id, kind: .password)) == F.password, "filled in")
+
+        for _ in 0..<2 {
+            let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+            #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+            #expect(target.profiles.map(\.id) == [plain.id])
+            #expect(try target.secrets.secret(for: SecretKey(profileID: plain.id, kind: .password)) == nil)
+            #expect(try target.secrets.secret(for: SecretKey(profileID: tunnelled.id, kind: .sshSecret)) == nil)
+        }
+    }
+
+    @Test func aRestoreAfterAFailedSecretsStepRemovesWhatWasWritten() throws {
+        let (source, plain, _) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        let flaky = FlakySecretStore(base: target.secrets, failingWrite: 2)
+        let report = target.applier(secretStore: flaky).apply(target.plan(try BackupFormat.decode(try exportAll(source), passphrase: F.passphrase)),
+                                                              now: F.date(100))
+        #expect(report.failedStep == .secrets)
+        #expect(try target.secrets.secret(for: SecretKey(profileID: plain.id, kind: .password)) == F.password, "the first write landed")
+        let restored = target.applier(secretStore: flaky).restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(try target.secrets.secret(for: SecretKey(profileID: plain.id, kind: .password)) == nil)
+        #expect(target.profiles.isEmpty)
+    }
+
+    // Review: after a restore puts a profile back on its earlier server, the password stored for the imported server
+    // must not follow it there.
+    @Test func aProfileBackOnItsEarlierRouteLosesTheImportedPassword() throws {
+        let id = UUID()
+        let source = BackupTestMac(home: F.oldHome)
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        source.profiles = [F.profile(id: id, name: "prod", host: "fe.new", updatedAt: F.date(50))]
+        try source.secrets.setSecret("new-password", for: SecretKey(profileID: id, kind: .password))
+        target.profiles = [F.profile(id: id, name: "prod", host: "fe.prod", updatedAt: F.date(1))]
+        try target.secrets.setSecret("old-password", for: SecretKey(profileID: id, kind: .password))
+
+        let plan = target.plan(try BackupFormat.decode(try exportAll(source), passphrase: F.passphrase))
+        #expect(plan.profiles.first?.resolution == .useImported)
+        let report = target.applier().apply(plan, now: F.date(100))
+        #expect(target.profiles.first?.host == "fe.new")
+        #expect(try target.secrets.secret(for: SecretKey(profileID: id, kind: .password)) == "new-password")
+
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(target.profiles.first?.host == "fe.prod")
+        #expect(try target.secrets.secret(for: SecretKey(profileID: id, kind: .password)) == nil)
+        #expect(restored.warnings.contains(.passwordRemoved("prod")))
+    }
+
+    @Test func aPasswordReplacedOnTheSameRouteStaysAndIsReported() throws {
+        let id = UUID()
+        let source = BackupTestMac(home: F.oldHome)
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        source.profiles = [F.profile(id: id, name: "prod", host: "fe.prod", port: 9030, updatedAt: F.date(50))]
+        source.profiles[0].defaultDatabase = "adx"
+        try source.secrets.setSecret("rotated", for: SecretKey(profileID: id, kind: .password))
+        target.profiles = [F.profile(id: id, name: "prod", host: "fe.prod", updatedAt: F.date(1))]
+        try target.secrets.setSecret("old-password", for: SecretKey(profileID: id, kind: .password))
+
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source), passphrase: F.passphrase)), now: F.date(100))
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded)
+        #expect(target.profiles.first?.defaultDatabase == nil)
+        #expect(try target.secrets.secret(for: SecretKey(profileID: id, kind: .password)) == "rotated")
+        #expect(restored.warnings.contains(.passwordNotRestored("prod")))
+    }
+
+    @Test func aProfileEditedAfterTheImportIsLeftAlone() throws {
+        let (source, plain, tunnelled) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        var older = plain
+        older.name = "prod (old name)"
+        older.updatedAt = F.date(0)
+        target.profiles = [older]
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        #expect(target.profiles.map(\.name) == ["prod", "tunnel"])
+        target.profiles[0].port = 9031
+        target.profiles[0].updatedAt = F.date(500)
+        target.profiles[1].name = "tunnel (mine now)"
+        target.profiles[1].updatedAt = F.date(500)
+
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(target.profiles.map(\.id) == [plain.id, tunnelled.id])
+        #expect(target.profiles.map(\.port) == [9031, tunnelled.port])
+        #expect(restored.warnings.contains(.changedSinceImport("prod")) && restored.warnings.contains(.changedSinceImport("tunnel (mine now)")))
+    }
+
+    // Review: restore brings back only the entries the import's cap pushed out, never ones deleted since.
+    @Test func historyComesBackOnlyWhereTheCapPushedItOut() throws {
+        let (source, plain, _) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        target.profiles = [plain]
+        let local = (0..<1_000).map { (index: Int) -> QueryHistoryEntry in F.historyEntry("SELECT \(index - 1_000)", at: Double(index - 1_000)) }
+        try BackupHistoryFiles.write(local.reversed(), for: plain.id, in: target.historyDirectory)
+
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        var history = try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory)
+        #expect(history.count == 1_000 && history.first?.sql == "SELECT 1" && history.last?.sql == "SELECT -999")
+        history.removeAll { $0.sql == "SELECT -1" }
+        try BackupHistoryFiles.write(history, for: plain.id, in: target.historyDirectory)
+
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        let after = try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory)
+        #expect(after.count == 999)
+        #expect(after.first?.sql == "SELECT -2" && after.last?.sql == "SELECT -1000", "the pushed-out entry is back, the deleted one is not")
+
+        try BackupHistoryFiles.remove(for: plain.id, in: target.historyDirectory)
+        _ = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory).map(\.sql) == ["SELECT -1000"],
+                "a history cleared after the import only gets back what the import pushed out")
+    }
+
     @Test func restoringLeavesKnowledgeTheSnapshotNeverCapturedAndRemovesWhatTheImportCreated() throws {
         let (source, _, _) = try sourceMac()
         let target = BackupTestMac(home: F.newHome)
@@ -228,7 +356,7 @@ struct BackupImportApplierTests {
         var importReport = BackupImportReport()
         importReport.snapshotURL = url
         importReport.changedKnowledgeIndex = true
-        let restored = target.applier().restore(importReport) { (_: [ConnectionProfile], _: [UUID]) throws -> Void in }
+        let restored = target.applier().restore(importReport) { (restore: BackupProfileRestore) throws -> BackupProfileRestore.Outcome in restore.apply(to: []) }
         #expect(restored.succeeded)
         #expect(try target.knowledge.index().revision == Int.max)
     }
@@ -254,16 +382,24 @@ struct BackupImportApplierTests {
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
-    @Test func upsertsReplaceByIDAppendNewOnesAndStampTheSave() {
+    @Test func upsertsReplaceByIDAndAppendNewOnes() {
         let first = F.profile(name: "a", host: "a.example")
         let second = F.profile(name: "b", host: "b.example")
         var renamed = first
         renamed.name = "a2"
         let added = F.profile(name: "c", host: "c.example")
-        let result = BackupImportApplier.upserting([renamed, added], into: [first, second], updatedAt: F.date(9))
+        let result = BackupImportApplier.upserting([renamed, added], into: [first, second])
         #expect(result.map(\.name) == ["a2", "b", "c"])
-        let stamps: [Date?] = result.map(\.updatedAt)
-        let expected: [Date?] = [F.date(9), nil, F.date(9)]
-        #expect(stamps == expected)
+    }
+
+    @Test func theImportStampsTheProfilesItSaves() throws {
+        let (source, plain, tunnelled) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        #expect(report.profileStamp == F.date(100))
+        #expect(target.profiles.map(\.id) == [plain.id, tunnelled.id])
+        let stamps: [Date?] = target.profiles.map(\.updatedAt)
+        #expect(stamps == [F.date(100), F.date(100)])
     }
 }

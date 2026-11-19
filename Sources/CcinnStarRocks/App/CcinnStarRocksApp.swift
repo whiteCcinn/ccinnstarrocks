@@ -360,7 +360,8 @@ extension FocusedValues {
 @MainActor
 enum BackupCommands {
     static func export(openWindow: OpenWindowAction) {
-        AppServices.shared.backup.beginExport()
+        let center = AppServices.shared.backup
+        if !center.isBusy { center.beginExport() }
         openWindow(id: BackupWindow.id)
     }
 
@@ -374,6 +375,7 @@ enum BackupCommands {
         openWindow(id: BackupWindow.id)
         Task { await AppServices.shared.backup.open(url) }
     }
+    // While an export or import runs these only bring its window forward; BackupCenter refuses a second flow.
 }
 
 struct AppCommands: Commands {
@@ -383,7 +385,9 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .importExport) {
             Button("Export Settings and Knowledge…") { BackupCommands.export(openWindow: openWindow) }
+                .disabled(AppServices.shared.backup.isBusy)
             Button("Import Settings and Knowledge…") { BackupCommands.import(openWindow: openWindow) }
+                .disabled(AppServices.shared.backup.isBusy)
         }
         CommandGroup(after: .newItem) {
             // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.

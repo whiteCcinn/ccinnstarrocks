@@ -160,6 +160,32 @@ extension Data {
 }
 
 /// A secret store that fails every write, to test partial imports.
+/// Delegates to `base` and fails the `failingWrite`-th write of a value (1-based), once.
+final class FlakySecretStore: SecretStore, @unchecked Sendable {
+    let base: InMemorySecretStore
+    private let failingWrite: Int
+    private let writes = NSLock()
+    private var count = 0
+
+    init(base: InMemorySecretStore, failingWrite: Int) {
+        self.base = base
+        self.failingWrite = failingWrite
+    }
+
+    func secret(for key: SecretKey) throws -> String? { try base.secret(for: key) }
+
+    func setSecret(_ value: String?, for key: SecretKey) throws {
+        if value != nil {
+            let shouldFail = writes.withLock { () -> Bool in
+                count += 1
+                return count == failingWrite
+            }
+            if shouldFail { throw SecretStoreError(message: "Keychain write failed (-25308)") }
+        }
+        try base.setSecret(value, for: key)
+    }
+}
+
 final class FailingSecretStore: SecretStore {
     func secret(for key: SecretKey) throws -> String? { nil }
 
@@ -199,15 +225,22 @@ final class BackupTestMac {
             knowledge: knowledge, historyDirectory: historyDirectory, secretStore: secretStore ?? secrets,
             applyProfiles: { [unowned self] (upserts: [ConnectionProfile]) throws -> Void in
                 if self.failProfiles { throw CocoaError(.fileWriteNoPermission) }
-                self.profiles = BackupImportApplier.upserting(upserts, into: self.profiles, updatedAt: BackupFixtures.referenceDate)
+                self.profiles = BackupImportApplier.upserting(upserts, into: self.profiles)
             },
             writeSetting: { [unowned self] (key: String, value: BackupSettingValue?) throws -> Void in
                 self.settings[key] = value
             })
     }
 
-    func restoreProfiles(_ restored: [ConnectionProfile], removing removed: [UUID]) throws {
-        profiles = BackupImportApplier.restoring(restored, removing: removed, in: profiles)
+    /// As the app's ProfileStore: applies the restore and removes the Keychain items of profiles it takes out.
+    func restoreProfiles(_ restore: BackupProfileRestore) throws -> BackupProfileRestore.Outcome {
+        let outcome = restore.apply(to: profiles)
+        profiles = outcome.profiles
+        for id in outcome.removed {
+            try secrets.setSecret(nil, for: SecretKey(profileID: id, kind: .password))
+            try secrets.setSecret(nil, for: SecretKey(profileID: id, kind: .sshSecret))
+        }
+        return outcome
     }
 
     func localState(for bundle: BackupBundle) -> BackupLocalState {

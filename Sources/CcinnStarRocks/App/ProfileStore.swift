@@ -97,18 +97,19 @@ final class ProfileStore {
         try? persist()
     }
 
-    /// Adds or replaces the profiles of an import in one save. Their secrets are already in the Keychain. When saving
-    /// fails the list stays as it was.
+    /// Adds or replaces the profiles of an import (already stamped by the import) in one save. Their secrets are
+    /// already in the Keychain. When saving fails the list stays as it was.
     func apply(_ upserts: [ConnectionProfile]) throws {
-        try replace(with: BackupImportApplier.upserting(upserts, into: profiles, updatedAt: Date()))
+        try replace(with: BackupImportApplier.upserting(upserts, into: profiles))
     }
 
-    /// Undoes an import: puts back the profiles it replaced and removes the ones it added, with their Keychain items.
-    /// Profiles created or changed since stay as they are.
-    func restore(_ restored: [ConnectionProfile], removing removed: [UUID]) throws {
-        try replace(with: BackupImportApplier.restoring(restored, removing: removed, in: profiles))
-        // Also when the import stopped before saving the profile: its secrets were written first.
-        for id in Set(removed) { try? repository.deleteSecrets(of: id) }
+    /// Undoes an import's profile changes (see `BackupProfileRestore`) and removes the Keychain items of the profiles it
+    /// takes out, also ones the import recorded but never saved.
+    func restore(_ restore: BackupProfileRestore) throws -> BackupProfileRestore.Outcome {
+        let outcome = restore.apply(to: profiles)
+        try replace(with: outcome.profiles)
+        for id in outcome.removed { try? repository.deleteSecrets(of: id) }
+        return outcome
     }
 
     private func replace(with updated: [ConnectionProfile]) throws {

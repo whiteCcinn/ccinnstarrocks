@@ -178,7 +178,7 @@ On the other Mac, **File ▸ Import Settings and Knowledge…** opens the file, 
 - **Projects** that are not on this Mac are marked. Point one at a folder, or move them all at once (`/Volumes/Work/code` → `~/code`).
 - **Settings** show old → new, each one optional; **history** shows how many statements each connection gains.
 
-Importing first saves your current setup (without passwords) to `Backups/` in the app's data folder, keeping the last five. The report offers **Restore Pre-Import Snapshot**, which undoes exactly what the import wrote: connections it added or replaced, knowledge, history entries and settings. Connections you add or queries you run afterwards are kept; passwords it replaced cannot be put back. Importing the same file again changes nothing. After an import that changed connections, restart the MCP server in your AI clients (`/mcp` in Claude Code) so they see them.
+Importing first saves your current setup (without passwords) to `Backups/` in the app's data folder, keeping the last five. The report offers **Restore Pre-Import Snapshot**, which undoes exactly what the import wrote: connections it added or replaced, the passwords it added, knowledge, history entries and settings. Connections you add or change and queries you run afterwards are kept. A password the import replaced cannot be put back; if its connection goes back to another server, the imported password is removed rather than sent there, and you enter it again. A restore that stops part-way can be run again. Importing the same file again changes nothing. After an import that changed connections, restart the MCP server in your AI clients (`/mcp` in Claude Code) so they see them.
 
 ## MCP server: let AI query StarRocks
 

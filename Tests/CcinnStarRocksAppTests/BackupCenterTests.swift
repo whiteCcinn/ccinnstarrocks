@@ -186,6 +186,81 @@ struct BackupCenterTests {
         #expect(new.center.remapMessage == "2 projects moved.")
     }
 
+    // Review: a second flow started while one runs must be refused, not overwrite the first one's state.
+    @Test func nothingStartsWhileAnOperationRuns() async throws {
+        let mac = TestMac(home: "/Users/me")
+        defer { mac.remove() }
+        try mac.profiles.save(ConnectionProfile(name: "prod", host: "fe.prod"), password: nil, sshSecret: nil)
+        let file = mac.directory.appendingPathComponent("busy.\(BackupFormat.fileExtension)")
+        mac.exportURL = file
+        mac.center.beginExport()
+        let export = Task { await mac.center.export() }
+        await Task.yield()
+        #expect(mac.center.isBusy)
+        await mac.center.open(file)
+        mac.center.beginExport()
+        mac.center.showHome()
+        #expect(mac.center.importURL == nil && mac.center.isBusy, "every entry point is refused while busy")
+        await export.value
+        #expect(mac.center.stage == .exported)
+    }
+
+    // Review: a restore that stopped part-way can be run again once the cause is fixed.
+    @Test func aFailedRestoreCanBeRetried() async throws {
+        let old = TestMac(home: "/Users/old")
+        let new = TestMac(home: "/Users/new")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: new.directory.path)
+            old.remove()
+            new.remove()
+        }
+        try old.profiles.save(ConnectionProfile(name: "prod", host: "fe.prod"), password: nil, sshSecret: nil)
+        old.exportURL = old.directory.appendingPathComponent("move.\(BackupFormat.fileExtension)")
+        old.center.beginExport()
+        await old.center.export()
+        await new.center.open(try #require(old.exportURL))
+        await new.center.performImport()
+        #expect(new.profiles.profiles.count == 1)
+
+        // connections.json cannot be replaced while its folder is read-only.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: new.directory.path)
+        await new.center.restoreSnapshot()
+        #expect(new.center.report?.failedStep == .profiles)
+        #expect(new.center.canRestore, "Restore is offered again")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: new.directory.path)
+        await new.center.restoreSnapshot()
+        #expect(new.center.report?.succeeded == true, "\(new.center.report?.failureMessage ?? "")")
+        #expect(new.profiles.profiles.isEmpty)
+        #expect(!new.center.canRestore)
+    }
+
+    // Review: closing the window drops a decrypted plan instead of keeping it until the next flow.
+    @Test func closingTheWindowForgetsTheDecryptedPlan() async throws {
+        let old = TestMac(home: "/Users/old")
+        let new = TestMac(home: "/Users/new")
+        defer { old.remove(); new.remove() }
+        try old.profiles.save(ConnectionProfile(name: "prod", host: "fe.prod"), password: "s3cret", sshSecret: nil)
+        old.exportURL = old.directory.appendingPathComponent("move.\(BackupFormat.fileExtension)")
+        old.center.beginExport()
+        old.center.includePasswords = true
+        old.center.passphrase = passphrase
+        old.center.passphraseConfirmation = passphrase
+        await old.center.export()
+        await new.center.open(try #require(old.exportURL))
+        new.center.importPassphrase = passphrase
+        await new.center.unlock()
+        #expect(new.center.plan?.secretWrites.isEmpty == false)
+        new.center.windowClosed()
+        #expect(new.center.plan == nil && new.center.stage == .home)
+
+        await new.center.open(try #require(old.exportURL))
+        new.center.importPassphrase = ""
+        await new.center.unlock()
+        #expect(new.center.stage == .passphrase && new.center.passphraseMessage == nil, "an empty passphrase is not tried")
+        new.center.beginExport()
+        #expect(new.center.plan == nil)
+    }
+
     @Test func profileEditsCountAsChangesForBackups() throws {
         let mac = TestMac(home: "/Users/me")
         defer { mac.remove() }

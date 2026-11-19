@@ -216,6 +216,21 @@ struct ExportSkewHistoryTests {
         #expect(await QueryHistoryStore(directory: directory, profileID: profile).all().isEmpty)
     }
 
+    // Review: two windows on one connection appending at the same moment must not lose each other's statements.
+    @Test func concurrentWindowsOnOneConnectionLoseNoStatement() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnsr-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profile = UUID()
+        let windows = [QueryHistoryStore(directory: directory, profileID: profile), QueryHistoryStore(directory: directory, profileID: profile)]
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<60 {
+                let window = windows[index % 2]
+                group.addTask { await window.append(QueryHistoryEntry(sql: "SELECT \(index)", database: nil, durationMilliseconds: 1)) }
+            }
+        }
+        #expect(await QueryHistoryStore(directory: directory, profileID: profile).all().count == 60)
+    }
+
     // An import (or a second window on the same connection) rewrites the file while a window holds its copy: the
     // window's next query must add to what is on disk, not put its stale copy back.
     @Test func historyWrittenElsewhereIsKeptByTheNextAppend() async throws {

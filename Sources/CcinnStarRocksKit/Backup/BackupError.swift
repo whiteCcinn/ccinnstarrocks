@@ -67,6 +67,12 @@ public enum BackupWarning: Sendable, Hashable, CustomStringConvertible {
     // Restoring
     /// The snapshot does not hold this part (knowledge, settings or one database), so it was left as the import made it.
     case notRestored(String)
+    /// The profile was edited after the import, so the restore left it as it is.
+    case changedSinceImport(String)
+    /// The import replaced this profile's password; the earlier one cannot be put back.
+    case passwordNotRestored(String)
+    /// The password the import stored was removed because the profile went back to its earlier server or SSH route.
+    case passwordRemoved(String)
 
     public var description: String {
         switch self {
@@ -88,6 +94,10 @@ public enum BackupWarning: Sendable, Hashable, CustomStringConvertible {
         case let .secretNotExported(name): "The passwords of “\(name)” could not be read from the Keychain and were not included."
         case let .historyNotExported(name): "The history of “\(name)” could not be read and was not included."
         case let .notRestored(part): "The pre-import snapshot does not include \(part); it was left as the import made it."
+        case let .changedSinceImport(name): "“\(name)” was changed after the import, so it was left as it is."
+        case let .passwordNotRestored(name): "The import replaced the password of “\(name)”; the earlier one cannot be put back."
+        case let .passwordRemoved(name):
+            "“\(name)” is back on its earlier server, so the password the import stored for it was removed. Enter its password again."
         }
     }
 }

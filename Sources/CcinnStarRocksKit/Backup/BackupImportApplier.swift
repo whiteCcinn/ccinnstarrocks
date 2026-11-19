@@ -17,16 +17,22 @@ public struct BackupImportReport: Sendable {
     public internal(set) var databasesMerged = 0
     public internal(set) var historyEntriesAdded = 0
     public internal(set) var settingsChanged = 0
+    /// Restore only: Keychain items it removed.
+    public internal(set) var secretsRemoved = 0
     // What the import wrote, so `restore` undoes exactly that and nothing else.
     var writtenDatabases: [DatabaseKey] = []
     var createdDatabases: [DatabaseKey] = []
     var changedKnowledgeIndex = false
     var changedHistory: [UUID] = []
-    /// The history entries the import added, per local profile id.
+    /// The history entries the import added, and the local ones the 1,000-entry cap pushed out, per local profile id.
     var addedHistory: [UUID: Set<UUID>] = [:]
+    var displacedHistory: [UUID: Set<UUID>] = [:]
     var changedSettings: [String] = []
-    /// The profiles the import added or replaced.
+    /// The profiles the import added or replaced, and the `updatedAt` it gave them.
     var savedProfileIDs: [UUID] = []
+    var profileStamp: Date?
+    /// Keychain items the import wrote (recorded before each write), and whether a value may have been there before.
+    var writtenSecrets: [SecretKey: Bool] = [:]
 
     public var succeeded: Bool { failedStep == nil }
     /// AI clients' `mcp` servers read profiles once at startup; they need a restart to see these changes.
@@ -95,14 +101,21 @@ public struct BackupImportApplier {
 
             step = .secrets
             for write in plan.secretWrites {
+                report.writtenSecrets[write.key] = (report.writtenSecrets[write.key] ?? false) || write.replacesExisting
                 try secretStore.setSecret(write.value, for: write.key)
                 report.secretsWritten += 1
             }
             report.completedSteps.append(step)
 
             step = .profiles
-            let upserts = plan.profileUpserts
+            // Stamped here, so restore can tell a profile edited since the import from the one it saved.
+            let upserts = plan.profileUpserts.map { (profile: ConnectionProfile) -> ConnectionProfile in
+                var stamped = profile
+                stamped.updatedAt = now
+                return stamped
+            }
             report.savedProfileIDs = upserts.map(\.id)
+            report.profileStamp = upserts.isEmpty ? nil : now
             if !upserts.isEmpty { try applyProfiles(upserts) }
             report.profilesSaved = upserts.count
             report.completedSteps.append(step)
@@ -121,37 +134,18 @@ public struct BackupImportApplier {
         return report
     }
 
-    /// `profiles` with `changes` replacing those of the same id and the rest appended, each change stamped `updatedAt`.
-    public static func upserting(_ changes: [ConnectionProfile], into profiles: [ConnectionProfile], updatedAt: Date) -> [ConnectionProfile] {
+    /// `profiles` with `changes` replacing those of the same id and the rest appended. The applier has already
+    /// stamped each change's `updatedAt`.
+    public static func upserting(_ changes: [ConnectionProfile], into profiles: [ConnectionProfile]) -> [ConnectionProfile] {
         var result = profiles
         var positions: [UUID: Int] = [:]
         for (position, profile) in result.enumerated() { positions[profile.id] = position }
         for change in changes {
-            var stamped = change
-            stamped.updatedAt = updatedAt
-            if let position = positions[stamped.id] {
-                result[position] = stamped
+            if let position = positions[change.id] {
+                result[position] = change
             } else {
-                positions[stamped.id] = result.count
-                result.append(stamped)
-            }
-        }
-        return result
-    }
-
-    /// `profiles` with `restored` put back by id (re-added when deleted since) and `removed` taken out; every other
-    /// profile, including ones created after the import, stays as it is.
-    public static func restoring(_ restored: [ConnectionProfile], removing removed: [UUID], in profiles: [ConnectionProfile]) -> [ConnectionProfile] {
-        let removedIDs = Set(removed)
-        var result = profiles.filter { !removedIDs.contains($0.id) }
-        var positions: [UUID: Int] = [:]
-        for (position, profile) in result.enumerated() { positions[profile.id] = position }
-        for profile in restored where !removedIDs.contains(profile.id) {
-            if let position = positions[profile.id] {
-                result[position] = profile
-            } else {
-                positions[profile.id] = result.count
-                result.append(profile)
+                positions[change.id] = result.count
+                result.append(change)
             }
         }
         return result
@@ -188,15 +182,19 @@ public struct BackupImportApplier {
 
     private func applyHistory(_ changes: [BackupHistoryChange], report: inout BackupImportReport) throws {
         for change in changes {
-            let current = try BackupHistoryFiles.read(for: change.profileID, in: historyDirectory)
-            let count = BackupHistoryFiles.addedEntryCount(local: current, imported: change.entries)
-            guard count > 0 else { continue }
-            let merged = BackupHistoryFiles.merge(local: current, imported: change.entries)
-            let localIDs = Set(current.map(\.id))
-            report.changedHistory.append(change.profileID)
-            report.addedHistory[change.profileID] = Set(merged.lazy.map(\.id).filter { !localIDs.contains($0) })
-            try BackupHistoryFiles.write(merged, for: change.profileID, in: historyDirectory)
-            report.historyEntriesAdded += count
+            try QueryHistoryStore.withFileLock(in: historyDirectory) { () throws -> Void in
+                let current = try BackupHistoryFiles.read(for: change.profileID, in: historyDirectory)
+                let count = BackupHistoryFiles.addedEntryCount(local: current, imported: change.entries)
+                guard count > 0 else { return }
+                let merged = BackupHistoryFiles.merge(local: current, imported: change.entries)
+                let localIDs = Set(current.map(\.id))
+                let mergedIDs = Set(merged.map(\.id))
+                report.changedHistory.append(change.profileID)
+                report.addedHistory[change.profileID] = mergedIDs.subtracting(localIDs)
+                report.displacedHistory[change.profileID] = localIDs.subtracting(mergedIDs)
+                try BackupHistoryFiles.write(merged, for: change.profileID, in: historyDirectory)
+                report.historyEntriesAdded += count
+            }
         }
     }
 
@@ -244,13 +242,15 @@ public struct BackupImportApplier {
 
     /// Undoes what the import behind `importReport` wrote, from its pre-import snapshot, and nothing else:
     /// - the knowledge files it changed (files it created are removed; files it never touched stay as they are) and the index;
-    /// - the history entries it added (queries run since stay; entries the import pushed past the cap come back);
-    /// - the profiles it added or replaced, through `restoreProfiles(restored, removed)`: replaced ones go back to their
-    ///   snapshot version, added ones are removed (the app also removes their Keychain items), others stay;
+    /// - the profiles it added or replaced, through `restoreProfiles` (see `BackupProfileRestore`): replaced ones go back
+    ///   to their snapshot version, added ones are removed, and one edited since the import stays as it is;
+    /// - the Keychain items it added; a password it replaced cannot be put back, and is removed when its profile goes
+    ///   back to another server or SSH route, so it never follows the profile there;
+    /// - the history entries it added (queries run since stay; entries the cap pushed out come back);
     /// - the settings it changed.
-    /// Secrets are never in a snapshot: ones the import replaced cannot be restored.
+    /// Every step can run again, so a restore that stopped part-way can be retried.
     public func restore(_ importReport: BackupImportReport,
-                        restoreProfiles: (_ restored: [ConnectionProfile], _ removed: [UUID]) throws -> Void) -> BackupImportReport {
+                        restoreProfiles: (BackupProfileRestore) throws -> BackupProfileRestore.Outcome) -> BackupImportReport {
         var report = BackupImportReport()
         report.snapshotURL = importReport.snapshotURL
         var step = BackupImportReport.Step.snapshot
@@ -270,19 +270,25 @@ public struct BackupImportApplier {
             }
             report.completedSteps.append(step)
 
+            step = .profiles
             let snapshotProfiles = Dictionary(snapshot.profiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let removedProfiles = importReport.savedProfileIDs.filter { snapshotProfiles[$0] == nil }
-
-            step = .history
-            try restoreHistory(snapshot.history ?? [], after: importReport, removedProfiles: Set(removedProfiles))
+            var outcome = BackupProfileRestore.Outcome(profiles: [], removed: [], kept: [], routeChanged: [])
+            if !importReport.savedProfileIDs.isEmpty {
+                let restore = BackupProfileRestore(restored: importReport.savedProfileIDs.compactMap { snapshotProfiles[$0] },
+                                                   removed: importReport.savedProfileIDs.filter { snapshotProfiles[$0] == nil },
+                                                   importStamp: importReport.profileStamp)
+                outcome = try restoreProfiles(restore)
+                report.profilesSaved = importReport.savedProfileIDs.count - outcome.kept.count
+                for profile in outcome.kept { report.warnings.append(.changedSinceImport(profile.displayName)) }
+            }
             report.completedSteps.append(step)
 
-            step = .profiles
-            if !importReport.savedProfileIDs.isEmpty {
-                let restored = importReport.savedProfileIDs.compactMap { snapshotProfiles[$0] }
-                try restoreProfiles(restored, removedProfiles)
-                report.profilesSaved = restored.count + removedProfiles.count
-            }
+            step = .secrets
+            try restoreSecrets(after: importReport, outcome: outcome, names: snapshotProfiles, report: &report)
+            report.completedSteps.append(step)
+
+            step = .history
+            try restoreHistory(snapshot.history ?? [], after: importReport, removedProfiles: Set(outcome.removed))
             report.completedSteps.append(step)
 
             step = .settings
@@ -302,6 +308,27 @@ public struct BackupImportApplier {
             report.failureMessage = error.localizedDescription
         }
         return report
+    }
+
+    /// Removes the Keychain items the import added, except for profiles kept because they were edited since. A
+    /// password it replaced stays (the old one is gone) unless its profile went back to another route.
+    private func restoreSecrets(after importReport: BackupImportReport, outcome: BackupProfileRestore.Outcome,
+                                names: [UUID: ConnectionProfile], report: inout BackupImportReport) throws {
+        let kept = Set(outcome.kept.map(\.id))
+        var removedFor: Set<UUID> = []
+        var notRestored: Set<UUID> = []
+        for (key, replacedExisting) in importReport.writtenSecrets.sorted(by: { $0.key.account < $1.key.account }) where !kept.contains(key.profileID) {
+            if replacedExisting, !outcome.routeChanged.contains(key.profileID) {
+                notRestored.insert(key.profileID)
+                continue
+            }
+            try secretStore.setSecret(nil, for: key)
+            report.secretsRemoved += 1
+            if replacedExisting { removedFor.insert(key.profileID) }
+        }
+        func name(_ id: UUID) -> String { names[id]?.displayName ?? id.uuidString }
+        for id in removedFor.sorted(by: { name($0) < name($1) }) { report.warnings.append(.passwordRemoved(name(id))) }
+        for id in notRestored.sorted(by: { name($0) < name($1) }) { report.warnings.append(.passwordNotRestored(name(id))) }
     }
 
     /// Under the knowledge lock, with revisions above the current ones so caches reload.
@@ -337,21 +364,95 @@ public struct BackupImportApplier {
         revision < Int.max ? revision + 1 : Int.max
     }
 
-    /// Takes the entries the import added out of each history it extended and puts back what the cap pushed out; a
-    /// profile the restore removes keeps no history.
+    /// Takes the entries the import added out of each history it extended and puts back the ones its cap pushed out
+    /// (and only those: entries deleted since stay deleted); a profile the restore removed keeps no history.
     private func restoreHistory(_ history: [BackupHistory], after importReport: BackupImportReport, removedProfiles: Set<UUID>) throws {
         var groups: [UUID: [QueryHistoryEntry]] = [:]
         for group in history where groups[group.profile] == nil { groups[group.profile] = group.entries }
         for profileID in importReport.changedHistory {
             let added = importReport.addedHistory[profileID] ?? []
-            let current = try BackupHistoryFiles.read(for: profileID, in: historyDirectory)
-            let remaining = current.filter { !added.contains($0.id) }
-            let restored = BackupHistoryFiles.merge(local: remaining, imported: groups[profileID] ?? [])
-            if restored.isEmpty || removedProfiles.contains(profileID) {
-                try BackupHistoryFiles.remove(for: profileID, in: historyDirectory)
-            } else {
-                try BackupHistoryFiles.write(restored, for: profileID, in: historyDirectory)
+            let displaced = importReport.displacedHistory[profileID] ?? []
+            try QueryHistoryStore.withFileLock(in: historyDirectory) { () throws -> Void in
+                let current = try BackupHistoryFiles.read(for: profileID, in: historyDirectory)
+                let remaining = current.filter { !added.contains($0.id) }
+                let pushedOut = (groups[profileID] ?? []).filter { displaced.contains($0.id) }
+                let restored = BackupHistoryFiles.merge(local: remaining, imported: pushedOut)
+                if restored.isEmpty || removedProfiles.contains(profileID) {
+                    try BackupHistoryFiles.remove(for: profileID, in: historyDirectory)
+                } else if restored != current {
+                    try BackupHistoryFiles.write(restored, for: profileID, in: historyDirectory)
+                }
             }
         }
+    }
+}
+
+/// What a restore does to the profile list. Pure; the app applies the outcome to its ProfileStore.
+public struct BackupProfileRestore: Sendable, Equatable {
+    /// The snapshot versions of the profiles the import replaced.
+    public let restored: [ConnectionProfile]
+    /// The profiles the import added.
+    public let removed: [UUID]
+    /// The `updatedAt` the import gave the profiles it saved: a profile with another one was edited since.
+    public let importStamp: Date?
+
+    public struct Outcome: Sendable, Equatable {
+        /// The whole new list.
+        public let profiles: [ConnectionProfile]
+        /// Ids taken out (also ones the import recorded but never saved), whose Keychain items go too.
+        public let removed: [UUID]
+        /// Profiles left as they are because they were edited after the import.
+        public let kept: [ConnectionProfile]
+        /// Restored profiles whose server or SSH route differs from the version the import saved.
+        public let routeChanged: Set<UUID>
+
+        public init(profiles: [ConnectionProfile], removed: [UUID], kept: [ConnectionProfile], routeChanged: Set<UUID>) {
+            self.profiles = profiles
+            self.removed = removed
+            self.kept = kept
+            self.routeChanged = routeChanged
+        }
+    }
+
+    public init(restored: [ConnectionProfile], removed: [UUID], importStamp: Date?) {
+        self.restored = restored
+        self.removed = removed
+        self.importStamp = importStamp
+    }
+
+    /// Applies the restore to `profiles`. Profiles created after the import are never touched; a profile the import
+    /// replaced and the user deleted since comes back.
+    public func apply(to profiles: [ConnectionProfile]) -> Outcome {
+        var result = profiles
+        var positions: [UUID: Int] = [:]
+        for (position, profile) in result.enumerated() { positions[profile.id] = position }
+        var kept: [ConnectionProfile] = []
+        var removedIDs: Set<UUID> = []
+        var routeChanged: Set<UUID> = []
+        func editedSinceImport(_ profile: ConnectionProfile) -> Bool { profile.updatedAt != importStamp }
+
+        for id in removed {
+            if let position = positions[id], editedSinceImport(result[position]) {
+                kept.append(result[position])
+            } else {
+                removedIDs.insert(id)
+            }
+        }
+        for profile in restored {
+            guard let position = positions[profile.id] else {
+                positions[profile.id] = result.count
+                result.append(profile)
+                continue
+            }
+            let current = result[position]
+            if editedSinceImport(current) {
+                kept.append(current)
+                continue
+            }
+            if BackupImportPlanner.RouteKey(current) != BackupImportPlanner.RouteKey(profile) { routeChanged.insert(profile.id) }
+            result[position] = profile
+        }
+        result.removeAll { removedIDs.contains($0.id) }
+        return Outcome(profiles: result, removed: removed.filter { removedIDs.contains($0) }, kept: kept, routeChanged: routeChanged)
     }
 }

@@ -23,6 +23,7 @@ struct BackupWindow: View {
             }
         }
         .frame(minWidth: 620, idealWidth: 720, minHeight: 460, idealHeight: 640)
+        .onDisappear { center.windowClosed() }
     }
 
     private var home: some View {
@@ -515,11 +516,11 @@ private struct BackupReportView: View {
                           systemImage: "sparkles")
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let snapshot = report.snapshotURL, !center.reportIsRestore {
+                if let snapshot = report.snapshotURL, center.canRestore {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Your setup before the import was saved to").font(.callout).foregroundStyle(.secondary)
                         Text(snapshot.path).font(Theme.monospacedSmall).textSelection(.enabled)
-                        Text("Restore undoes what this import wrote: connections it added or replaced, knowledge, history and settings. Passwords it replaced cannot be put back.")
+                        Text("Restore undoes what this import wrote: connections it added or replaced (unless you changed them since), the passwords it added, knowledge, history and settings. Passwords it replaced cannot be put back.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -553,7 +554,11 @@ private struct BackupReportView: View {
     private func counts(_ report: BackupImportReport) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
             row(center.reportIsRestore ? "Connections put back or removed" : "Connections saved", report.profilesSaved)
-            if !center.reportIsRestore { row("Passwords stored in the Keychain", report.secretsWritten) }
+            if center.reportIsRestore {
+                row("Passwords removed from the Keychain", report.secretsRemoved)
+            } else {
+                row("Passwords stored in the Keychain", report.secretsWritten)
+            }
             if !center.reportIsRestore { row("Knowledge databases merged", report.databasesMerged) }
             if !center.reportIsRestore { row("History statements added", report.historyEntriesAdded) }
             row("Settings changed", report.settingsChanged)

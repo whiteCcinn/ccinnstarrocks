@@ -84,6 +84,8 @@ final class BackupCenter {
     private(set) var plan: BackupImportPlan?
     private(set) var report: BackupImportReport?
     private(set) var reportIsRestore = false
+    /// The import Restore undoes; kept apart from `report` so a restore that stopped part-way can be retried.
+    private var lastImport: BackupImportReport?
     var remapFrom = ""
     var remapTo = ""
     private(set) var remapMessage: String?
@@ -94,10 +96,26 @@ final class BackupCenter {
         self.fileExists = fileExists
     }
 
+    /// Work is running off the main actor; every entry point refuses to start another flow meanwhile.
+    var isBusy: Bool {
+        if case .working = stage { return true }
+        return false
+    }
+
     func showHome() {
+        guard !isBusy else { return }
         forgetSecrets()
         plan = nil
         stage = .home
+    }
+
+    /// The window closed: decrypted secrets and passphrases go. A report stays, so Restore is still offered when the
+    /// window opens again.
+    func windowClosed() {
+        guard !isBusy else { return }
+        forgetSecrets()
+        plan = nil
+        if stage != .report { stage = .home }
     }
 
     // MARK: Export
@@ -112,7 +130,9 @@ final class BackupCenter {
     }
 
     func beginExport() {
+        guard !isBusy else { return }
         forgetSecrets()
+        plan = nil
         exportResult = nil
         stage = .exportForm
     }
@@ -127,11 +147,7 @@ final class BackupCenter {
     func export() async {
         guard stage == .exportForm, exportProblem == nil else { return }
         guard let url = panels.chooseExportURL(Self.suggestedFileName(now: Date())) else { return }
-        var options = BackupExportOptions()
-        options.includeKnowledge = includeKnowledge
-        options.includeSettings = includeSettings
-        options.includeHistory = includeHistory
-        options.passphrase = includePasswords ? passphrase : nil
+        let options = exportOptions()
         passphrase = ""
         passphraseConfirmation = ""
         let stores = stores
@@ -154,6 +170,15 @@ final class BackupCenter {
         }
     }
 
+    private func exportOptions() -> BackupExportOptions {
+        var options = BackupExportOptions()
+        options.includeKnowledge = includeKnowledge
+        options.includeSettings = includeSettings
+        options.includeHistory = includeHistory
+        options.passphrase = includePasswords ? passphrase : nil
+        return options
+    }
+
     // MARK: Import
 
     func beginImport() async {
@@ -161,10 +186,14 @@ final class BackupCenter {
         await open(url)
     }
 
-    func chooseImportFile() -> URL? { panels.chooseImportURL() }
+    func chooseImportFile() -> URL? {
+        guard !isBusy else { return nil }
+        return panels.chooseImportURL()
+    }
 
     /// Reads `url`; asks for the passphrase when it holds passwords, otherwise goes straight to the preview.
     func open(_ url: URL) async {
+        guard !isBusy else { return }
         forgetSecrets()
         plan = nil
         report = nil
@@ -186,7 +215,7 @@ final class BackupCenter {
     }
 
     func unlock() async {
-        guard stage == .passphrase, !secretsRefused, let url = importURL else { return }
+        guard stage == .passphrase, !secretsRefused, !importPassphrase.isEmpty, let url = importURL else { return }
         let passphrase = importPassphrase
         importPassphrase = ""
         stage = .working("Checking the passphrase…")
@@ -293,26 +322,32 @@ final class BackupCenter {
         }.value
         self.plan = nil
         self.report = report
+        lastImport = report.snapshotURL == nil ? nil : report
         reportIsRestore = false
         stage = .report
     }
 
-    /// Offered on the report of the import just made: undoes what it wrote (see `BackupImportApplier.restore`).
-    var canRestore: Bool { !reportIsRestore && report?.snapshotURL != nil }
+    /// Offered on the report of the import just made, and again after a restore that stopped part-way: undoes what
+    /// the import wrote (see `BackupImportApplier.restore`).
+    var canRestore: Bool {
+        guard lastImport?.snapshotURL != nil else { return false }
+        return !reportIsRestore || report?.succeeded == false
+    }
 
     func restoreSnapshot() async {
-        guard canRestore, let importReport = report else { return }
+        guard stage == .report, canRestore, let importReport = lastImport else { return }
         stage = .working("Restoring the pre-import snapshot…")
         let stores = stores
         let profiles = stores.profiles.profiles
         let settings = settingsSnapshot()
         let restored = await Task.detached(priority: .userInitiated) { () -> BackupImportReport in
-            Self.applier(stores, profiles: profiles, settings: settings).restore(importReport) { (restored: [ConnectionProfile], removed: [UUID]) throws -> Void in
-                try onMainActor { try stores.profiles.restore(restored, removing: removed) }
+            Self.applier(stores, profiles: profiles, settings: settings).restore(importReport) { (restore: BackupProfileRestore) throws -> BackupProfileRestore.Outcome in
+                try onMainActor { try stores.profiles.restore(restore) }
             }
         }.value
         report = restored
         reportIsRestore = true
+        if restored.succeeded { lastImport = nil }
         stage = .report
     }
 
@@ -356,12 +391,11 @@ final class BackupCenter {
 
 /// Runs `work` on the main actor and waits for it: the applier changes profiles and settings synchronously from a
 /// background thread. Runs in place when already on the main thread, so it never waits on itself.
-nonisolated func onMainActor(_ work: @MainActor () throws -> Void) rethrows {
+nonisolated func onMainActor<T: Sendable>(_ work: @MainActor () throws -> T) rethrows -> T {
     if Thread.isMainThread {
-        try MainActor.assumeIsolated(work)
-    } else {
-        try DispatchQueue.main.sync { try MainActor.assumeIsolated(work) }
+        return try MainActor.assumeIsolated(work)
     }
+    return try DispatchQueue.main.sync { try MainActor.assumeIsolated(work) }
 }
 
 extension BackupCenter.Panels {

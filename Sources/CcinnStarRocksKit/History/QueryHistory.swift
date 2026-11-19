@@ -78,20 +78,40 @@ public actor QueryHistoryStore {
         var entry = entry
         entry.sql = SQLRedactor.redact(entry.sql)
         if entry.sql.count > maxStatementLength { entry.sql = String(entry.sql.prefix(maxStatementLength)) }
-        var all = loadIfNeeded()
-        // Re-running the latest statement replaces it instead of stacking duplicates.
-        if let first = all.first, first.sql == entry.sql, first.database == entry.database { all.removeFirst() }
-        all.insert(entry, at: 0)
-        if all.count > maxEntries { all.removeLast(all.count - maxEntries) }
-        entries = all
-        persist(all)
+        let maxEntries = maxEntries
+        mutate { (all: inout [QueryHistoryEntry]) -> Void in
+            // Re-running the latest statement replaces it instead of stacking duplicates.
+            if let first = all.first, first.sql == entry.sql, first.database == entry.database { all.removeFirst() }
+            all.insert(entry, at: 0)
+            if all.count > maxEntries { all.removeLast(all.count - maxEntries) }
+        }
     }
 
     public func delete(_ id: UUID) {
-        var all = loadIfNeeded()
-        all.removeAll { $0.id == id }
-        entries = all
-        persist(all)
+        mutate { (all: inout [QueryHistoryEntry]) -> Void in all.removeAll { $0.id == id } }
+    }
+
+    /// `History/.lock`: held around every read-modify-write of a history file, by each window's store and by imports.
+    public static func withFileLock<T>(in directory: URL, _ body: () throws -> T) throws -> T {
+        try SecureFile.createDirectory(directory)
+        return try FileLock.withLock(at: directory.appendingPathComponent(".lock"), timeout: .seconds(2), body)
+    }
+
+    /// Reads the file as it is now and writes the change under the lock. If the lock cannot be had, the change is still
+    /// written: a lost entry elsewhere is better than losing this one.
+    private func mutate(_ change: (inout [QueryHistoryEntry]) -> Void) {
+        let directory = fileURL.deletingLastPathComponent()
+        func write() {
+            var all = loadIfNeeded()
+            change(&all)
+            entries = all
+            persist(all)
+        }
+        do {
+            try Self.withFileLock(in: directory, write)
+        } catch {
+            write()
+        }
     }
 
     public func clear() {

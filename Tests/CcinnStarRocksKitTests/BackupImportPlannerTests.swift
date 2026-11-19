@@ -180,9 +180,9 @@ struct BackupProfilePlanTests {
         let state = F.localState(profiles: [local], secrets: [local.id: BackupProfileSecrets(password: "local-pw", sshSecret: nil)])
         var plan = F.plan(F.bundle(payload([changed, added]), secrets: imported, authenticated: true), local: state)
 
-        let replacedPassword = BackupSecretWrite(key: SecretKey(profileID: local.id, kind: .password), value: "imported-pw")
-        let filledSSHSecret = BackupSecretWrite(key: SecretKey(profileID: local.id, kind: .sshSecret), value: "imported-ssh")
-        let newPassword = BackupSecretWrite(key: SecretKey(profileID: added.id, kind: .password), value: "new-pw")
+        let replacedPassword = BackupSecretWrite(key: SecretKey(profileID: local.id, kind: .password), value: "imported-pw", replacesExisting: true)
+        let filledSSHSecret = BackupSecretWrite(key: SecretKey(profileID: local.id, kind: .sshSecret), value: "imported-ssh", replacesExisting: false)
+        let newPassword = BackupSecretWrite(key: SecretKey(profileID: added.id, kind: .password), value: "new-pw", replacesExisting: false)
         // Use imported (the default here): the local secret is replaced. A new profile receives its secret.
         let useImported: Set<BackupSecretWrite> = [replacedPassword, filledSSHSecret, newPassword]
         #expect(Set(plan.secretWrites) == useImported)

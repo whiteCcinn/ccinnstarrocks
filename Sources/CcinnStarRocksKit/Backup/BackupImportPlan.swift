@@ -201,15 +201,22 @@ public struct BackupProfileItem: Sendable, Identifiable {
             guard let value = importedSecrets.value(for: kind) else { continue }
             let existing = localSecrets?.value(for: kind)
             let shouldWrite: Bool
+            // Whether a value may already be stored under the key (unknown counts as yes): restore removes only new ones.
+            let replacesExisting: Bool
             switch (status, resolution) {
             case (.new, _), (.conflict, .keepBoth):
                 shouldWrite = true
+                replacesExisting = false
             case (.conflict, .useImported):
                 shouldWrite = localSecrets == nil || existing != value
+                replacesExisting = localSecrets == nil || existing != nil
             default:
                 shouldWrite = localSecrets != nil && existing == nil
+                replacesExisting = false
             }
-            if shouldWrite { writes.append(BackupSecretWrite(key: SecretKey(profileID: target, kind: kind), value: value)) }
+            if shouldWrite {
+                writes.append(BackupSecretWrite(key: SecretKey(profileID: target, kind: kind), value: value, replacesExisting: replacesExisting))
+            }
         }
         return writes
     }
@@ -225,10 +232,13 @@ public struct BackupProfileItem: Sendable, Identifiable {
 public struct BackupSecretWrite: Sendable, Hashable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public let key: SecretKey
     let value: String
+    /// A value may already be stored under `key`; restore cannot put it back, so it leaves the key alone.
+    let replacesExisting: Bool
 
-    init(key: SecretKey, value: String) {
+    init(key: SecretKey, value: String, replacesExisting: Bool) {
         self.key = key
         self.value = value
+        self.replacesExisting = replacesExisting
     }
 
     public var description: String { "BackupSecretWrite(\(key.profileID.uuidString).\(key.kind.rawValue), redacted)" }
