@@ -52,6 +52,8 @@ final class BackupCenter {
         let url: URL
         let profileCount: Int
         let secretCount: Int
+        /// Made with a passphrase (authenticated), whether or not any password was found to include.
+        let isPassphraseProtected: Bool
         let warnings: [String]
     }
 
@@ -145,7 +147,7 @@ final class BackupCenter {
                 return export
             }.value
             exportResult = ExportResult(url: url, profileCount: profiles.count, secretCount: export.secretCount,
-                                        warnings: export.warnings.map(\.description))
+                                        isPassphraseProtected: options.passphrase != nil, warnings: export.warnings.map(\.description))
             stage = .exported
         } catch {
             stage = .failed("The backup was not written: \(error.localizedDescription)")

@@ -76,8 +76,9 @@ struct BackupWindow: View {
 
     private func summary(_ result: BackupCenter.ExportResult) -> String {
         let connections = result.profileCount == 1 ? "1 connection" : "\(result.profileCount) connections"
-        if result.secretCount == 0 { return "\(connections), without passwords." }
-        return "\(connections); the passwords of \(result.secretCount) are encrypted with your passphrase."
+        if result.secretCount > 0 { return "\(connections); the passwords of \(result.secretCount) are encrypted with your passphrase." }
+        if result.isPassphraseProtected { return "\(connections). None has a saved password; the file is sealed with your passphrase." }
+        return "\(connections), without passwords."
     }
 
     private func failed(_ message: String) -> some View {
@@ -104,19 +105,23 @@ private struct BackupExportForm: View {
                         Text("Connections")
                         Text("\(center.stores.profiles.profiles.count) saved. Host, port, user, SSH route and AI access; never the SSH key files.")
                     }
+                    .accessibilityLabel("Connections")
                     .disabled(true)
                     Toggle(isOn: $center.includeKnowledge) {
                         Text("Knowledge and linked projects")
                         Text("Relationships, notes, glossary and subject areas, and which local projects each database is linked to.")
                     }
+                    .accessibilityLabel("Knowledge and linked projects")
                     Toggle(isOn: $center.includeSettings) {
                         Text("App settings")
                         Text("Appearance, automatic LIMIT, SQL formatting, update checks.")
                     }
+                    .accessibilityLabel("App settings")
                     Toggle(isOn: $center.includeHistory) {
                         Text("Query history")
                         Text("Statements you ran, with passwords in them removed. They may still name tables and contain literal values.")
                     }
+                    .accessibilityLabel("Query history")
                 } header: {
                     Text("Include")
                 }
@@ -125,6 +130,7 @@ private struct BackupExportForm: View {
                         Text("Include passwords and SSH secrets")
                         Text("Encrypted with a passphrase you choose (AES-256-GCM). It is never stored: without it the passwords cannot be recovered.")
                     }
+                    .accessibilityLabel("Include passwords and SSH secrets")
                     if center.includePasswords {
                         SecureField("Passphrase", text: $center.passphrase, prompt: Text("At least \(BackupFormat.minimumPassphraseLength) characters"))
                         SecureField("Repeat passphrase", text: $center.passphraseConfirmation)
@@ -163,14 +169,14 @@ private struct BackupPassphraseView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("This backup contains passwords", systemImage: "lock.fill").font(.title2.weight(.semibold))
+            Label("This backup is protected with a passphrase", systemImage: "lock.fill").font(.title2.weight(.semibold))
             if let url = center.importURL { Text(url.lastPathComponent).font(Theme.monospacedSmall).foregroundStyle(.secondary) }
             if center.secretsRefused {
                 Label(center.passphraseMessage ?? "", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Enter the passphrase it was made with. It also proves the file was not changed since. Without it everything except the passwords can still be imported.")
+                Text("Enter the passphrase it was made with: it opens the passwords inside and proves the file was not changed since. Without it everything except the passwords can still be imported.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 SecureField("Passphrase", text: $center.importPassphrase)
@@ -336,6 +342,7 @@ private struct BackupPreview: View {
                     }
                 }
                 .disabled(item.isUnchanged)
+                .accessibilityLabel(Self.settingName(item.key))
             }
         }
     }
