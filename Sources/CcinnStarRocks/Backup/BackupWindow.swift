@@ -10,7 +10,9 @@ struct BackupWindow: View {
     @Bindable var center: BackupCenter
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: a Group would give each screen its own onDisappear, and moving from one screen to the
+        // next would count as closing the window.
+        ZStack {
             switch center.stage {
             case .home: home
             case .exportForm: BackupExportForm(center: center)
