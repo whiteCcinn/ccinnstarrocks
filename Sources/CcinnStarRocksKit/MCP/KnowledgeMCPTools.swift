@@ -188,35 +188,10 @@ extension StarRocksMCPTools {
 
     func refreshKnowledge(_ key: DatabaseKey, _ client: StarRocksClient, _ settings: KnowledgeToolSettings,
                           mineHistory: Bool) async throws -> KnowledgeRefresher.Report {
-        let schema = try await KnowledgeExtractor.extract(database: key.database, from: client)
-        let history = mineHistory ? await historyEntries(cluster: key.cluster, settings: settings) : []
-        let now = settings.now()
-        // Inference reads this extraction's table facts.
-        var preview = try settings.store.database(key) ?? DatabaseKnowledge(key: key)
-        var scratch = KnowledgeRefresher.Report()
-        KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch)
-        let machine = settings.infer(KnowledgeInferenceInput(schema: schema, knowledge: preview, history: history, now: now))
-        let report = try settings.store.updateDatabase(key) { knowledge in
-            KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now)
-        }
-        if let hints = schema.clusterHints, let clusterID = hints.clusterID {
-            try settings.store.updateIndex { index in
-                if let position = index.clusters.firstIndex(where: { $0.key == key.cluster }) { index.clusters[position].starrocksClusterID = clusterID }
-            }
-        }
-        return report
-    }
-
-    /// Editor history of every saved profile that reaches the cluster (structure only is ever kept from it).
-    func historyEntries(cluster: ClusterKey, settings: KnowledgeToolSettings) async -> [QueryHistoryEntry] {
-        let aliases = Set(((try? settings.store.index().clusters.first { $0.key == cluster }?.aliases) ?? nil) ?? [])
-        var entries: [QueryHistoryEntry] = []
-        for profile in resolver.profiles {
-            let key = ClusterKey(profile: profile)
-            guard key == cluster || aliases.contains(key) else { continue }
-            entries += await QueryHistoryStore(directory: settings.historyDirectory, profileID: profile.id).all()
-        }
-        return entries
+        let history = mineHistory
+            ? await KnowledgeService.history(for: key.cluster, profiles: resolver.profiles, directory: settings.historyDirectory, store: settings.store)
+            : []
+        return try await KnowledgeService.refresh(key, source: client, store: settings.store, history: history, infer: settings.infer, now: settings.now())
     }
 
     // MARK: Payloads
