@@ -206,6 +206,10 @@ final class BackupTestMac {
             })
     }
 
+    func restoreProfiles(_ restored: [ConnectionProfile], removing removed: [UUID]) throws {
+        profiles = BackupImportApplier.restoring(restored, removing: removed, in: profiles)
+    }
+
     func localState(for bundle: BackupBundle) -> BackupLocalState {
         BackupLocalState.load(for: bundle, profiles: profiles, knowledge: knowledge, historyDirectory: historyDirectory, settings: settings,
                               secretStore: secrets)

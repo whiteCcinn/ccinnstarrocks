@@ -140,13 +140,61 @@ struct BackupImportApplierTests {
         #expect(target.profiles.count == 3)
         #expect(try target.knowledge.database(F.databaseKey)?.notes.count == 2)
 
-        let restored = target.applier().restore(report) { (profiles: [ConnectionProfile]) throws -> Void in target.profiles = profiles }
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
         #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
         #expect(target.profiles.map(\.id) == [mine.id])
         #expect(target.settings == ["appearance": .string("Light")], "settings the import added are removed again")
         #expect(try target.knowledge.database(F.databaseKey)?.notes.map(\.id) == ["n9"])
         #expect(try target.knowledge.index().projects.isEmpty)
         #expect(try BackupHistoryFiles.read(for: mine.id, in: target.historyDirectory).map(\.sql) == ["SELECT 'mine'"])
+    }
+
+    // Restore undoes the import, not the work done since: a connection added afterwards and queries run afterwards stay.
+    @Test func restoringKeepsWhatHappenedAfterTheImport() throws {
+        let (source, plain, tunnelled) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        target.profiles = [plain]
+        try BackupHistoryFiles.write([F.historyEntry("SELECT 'local'", at: 0)], for: plain.id, in: target.historyDirectory)
+
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        #expect(report.succeeded, "\(report.failureMessage ?? "")")
+        #expect(target.profiles.map(\.id) == [plain.id, tunnelled.id])
+        #expect(try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory).map(\.sql) == ["SELECT 1", "SELECT 'local'"])
+
+        let later = F.profile(name: "later", host: "fe.later")
+        target.profiles.append(later)
+        var history = try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory)
+        history.insert(F.historyEntry("SELECT 'after'", at: 200), at: 0)
+        try BackupHistoryFiles.write(history, for: plain.id, in: target.historyDirectory)
+
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(target.profiles.map(\.id) == [plain.id, later.id], "only the profile the import added is removed")
+        #expect(try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory).map(\.sql) == ["SELECT 'after'", "SELECT 'local'"],
+                "only the entries the import added are removed")
+    }
+
+    @Test func restoringPutsBackAReplacedProfileAndDropsTheHistoryOfARemovedOne() throws {
+        let (source, plain, tunnelled) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        var older = plain
+        older.name = "prod (old name)"
+        older.updatedAt = F.date(0)
+        target.profiles = [older]
+        try BackupHistoryFiles.write([F.historyEntry("SELECT 2", at: 3)], for: tunnelled.id, in: source.historyDirectory)
+
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        #expect(target.profiles.first?.name == "prod", "the newer imported profile replaced the local one")
+        #expect(try BackupHistoryFiles.read(for: tunnelled.id, in: target.historyDirectory).count == 1)
+
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(target.profiles.map(\.name) == ["prod (old name)"])
+        #expect(target.profiles.first?.updatedAt == F.date(0))
+        #expect(!FileManager.default.fileExists(atPath: BackupHistoryFiles.fileURL(for: tunnelled.id, in: target.historyDirectory).path),
+                "a profile that is gone again keeps no history")
     }
 
     @Test func restoringLeavesKnowledgeTheSnapshotNeverCapturedAndRemovesWhatTheImportCreated() throws {
@@ -161,7 +209,7 @@ struct BackupImportApplierTests {
 
         let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
         #expect(try target.knowledge.database(F.databaseKey) != nil)
-        let restored = target.applier().restore(report) { (profiles: [ConnectionProfile]) throws -> Void in target.profiles = profiles }
+        let restored = target.applier().restore(report, restoreProfiles: target.restoreProfiles)
         #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
         #expect(try target.knowledge.database(F.databaseKey) == nil, "the database the import created is gone")
         #expect(try target.knowledge.database(unlisted)?.notes.map(\.id) == ["n7"], "a file the snapshot never held is untouched")
@@ -180,7 +228,7 @@ struct BackupImportApplierTests {
         var importReport = BackupImportReport()
         importReport.snapshotURL = url
         importReport.changedKnowledgeIndex = true
-        let restored = target.applier().restore(importReport) { (_: [ConnectionProfile]) throws -> Void in }
+        let restored = target.applier().restore(importReport) { (_: [ConnectionProfile], _: [UUID]) throws -> Void in }
         #expect(restored.succeeded)
         #expect(try target.knowledge.index().revision == Int.max)
     }

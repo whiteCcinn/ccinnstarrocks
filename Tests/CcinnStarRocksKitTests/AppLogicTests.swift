@@ -215,4 +215,24 @@ struct ExportSkewHistoryTests {
         await reopened.clear()
         #expect(await QueryHistoryStore(directory: directory, profileID: profile).all().isEmpty)
     }
+
+    // An import (or a second window on the same connection) rewrites the file while a window holds its copy: the
+    // window's next query must add to what is on disk, not put its stale copy back.
+    @Test func historyWrittenElsewhereIsKeptByTheNextAppend() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnsr-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profile = UUID()
+        let window = QueryHistoryStore(directory: directory, profileID: profile)
+        await window.append(QueryHistoryEntry(sql: "SELECT 1", database: nil, durationMilliseconds: 1))
+        #expect(await window.all().count == 1, "the window has its copy cached")
+
+        let other = QueryHistoryStore(directory: directory, profileID: profile)
+        await other.append(QueryHistoryEntry(sql: "SELECT 2", database: nil, durationMilliseconds: 1))
+        #expect(await window.all().map(\.sql) == ["SELECT 2", "SELECT 1"], "reading sees the other writer")
+
+        await window.append(QueryHistoryEntry(sql: "SELECT 3", database: nil, durationMilliseconds: 1))
+        #expect(await QueryHistoryStore(directory: directory, profileID: profile).all().map(\.sql) == ["SELECT 3", "SELECT 2", "SELECT 1"])
+        let mode = try (FileManager.default.attributesOfItem(atPath: window.fileURL.path)[.posixPermissions] as? NSNumber)?.intValue
+        #expect(mode == 0o600)
+    }
 }
