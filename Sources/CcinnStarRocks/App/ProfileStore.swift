@@ -35,6 +35,8 @@ final class ProfileStore {
     /// Inserts or updates a profile; secrets go to the Keychain, never to the profile file.
     @discardableResult
     func save(_ profile: ConnectionProfile, password: String?, sshSecret: String?) throws -> ConnectionProfile {
+        var profile = profile
+        profile.updatedAt = Date()
         try repository.storeSecrets(for: profile, password: password, sshSecret: sshSecret)
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
             profiles[index] = profile
@@ -105,5 +107,5 @@ final class AppServices {
     static let shared = AppServices()
 
     let profiles = ProfileStore()
-    let historyDirectory = ProfileRepository.defaultDirectory.appendingPathComponent("History", isDirectory: true)
+    let historyDirectory = QueryHistoryStore.defaultDirectory
 }

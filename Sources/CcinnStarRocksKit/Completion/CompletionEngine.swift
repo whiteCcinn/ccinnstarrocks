@@ -68,12 +68,7 @@ public enum CompletionEngine {
     }
 
     /// A table reference in scope: a base table (database + name) or a derived table/CTE with known columns.
-    struct ScopeTable {
-        var alias: String?
-        var database: String?
-        var table: String
-        var derivedColumns: [String]?
-    }
+    typealias ScopeTable = SQLTableReference
 
     public static func complete(text: String, cursor: Int, schema: SchemaSnapshot, limit: Int = defaultLimit) -> CompletionResult {
         let lexer = SQLLexer(text)
@@ -107,7 +102,7 @@ public enum CompletionEngine {
         } ?? ""
         let before = tokens.filter { $0.range.upperBound <= replacementStart && $0.kind != .comment }
         let significant = tokens.filter { $0.kind != .comment }
-        let scope = scopeTables(tokens: significant, lexer: lexer, schema: schema)
+        let scope = SQLTableReferences.references(tokens: significant, lexer: lexer)
 
         var candidates: [CompletionItem]
         var missing: [TableKey] = []
@@ -157,129 +152,6 @@ public enum CompletionEngine {
             index -= 2
         }
         return parts
-    }
-
-    static let aliasStopWords: Set<String> = SQLKeywords.reserved.union([
-        "LATERAL", "WINDOW", "SEMI", "ANTI", "OUTER", "INNER", "PARTITION", "TABLET", "LIMIT", "WHERE", "ON", "USING",
-    ])
-
-    /// Tables, derived tables and CTEs referenced anywhere in the statement, with their aliases.
-    static func scopeTables(tokens: [SQLToken], lexer: SQLLexer, schema: SchemaSnapshot) -> [ScopeTable] {
-        var result: [ScopeTable] = []
-        var ctes: [String: [String]] = [:]
-        let words = tokens.map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
-
-        // CTEs: WITH name AS ( … ), name AS ( … )
-        if words.first == "WITH" {
-            var index = 1
-            if index < words.count, words[index] == "RECURSIVE" { index += 1 }
-            while index + 2 < tokens.count, isName(tokens[index]), words[index + 1] == "AS",
-                  lexer.text(of: tokens[index + 2]) == "(" {
-                let name = lexer.identifierValue(of: tokens[index])
-                let close = matchingParen(tokens: tokens, open: index + 2, lexer: lexer)
-                ctes[name.lowercased()] = derivedColumns(tokens: Array(tokens[(index + 3)..<close]), lexer: lexer)
-                index = close + 1
-                if index < tokens.count, lexer.text(of: tokens[index]) == "," { index += 1 } else { break }
-            }
-        }
-
-        var index = 0
-        while index < tokens.count {
-            let word = words[index]
-            let startsReference = ["FROM", "JOIN", "UPDATE", "INTO", "TABLE"].contains(word)
-            index += 1
-            guard startsReference else { continue }
-            var parsingList = true
-            while parsingList, index < tokens.count {
-                parsingList = false
-                if lexer.text(of: tokens[index]) == "(" {
-                    // Derived table: ( SELECT … ) [AS] alias
-                    let close = matchingParen(tokens: tokens, open: index, lexer: lexer)
-                    let columns = derivedColumns(tokens: Array(tokens[(index + 1)..<min(close, tokens.count)]), lexer: lexer)
-                    index = close + 1
-                    if let (alias, next) = parseAlias(tokens: tokens, words: words, at: index, lexer: lexer) {
-                        result.append(ScopeTable(alias: alias, database: nil, table: alias, derivedColumns: columns))
-                        index = next
-                    }
-                } else if isName(tokens[index]), !aliasStopWords.contains(words[index]) || tokens[index].kind != .keyword {
-                    var parts = [lexer.identifierValue(of: tokens[index])]
-                    index += 1
-                    while index + 1 < tokens.count, isDot(tokens[index], lexer), isName(tokens[index + 1]) {
-                        parts.append(lexer.identifierValue(of: tokens[index + 1]))
-                        index += 2
-                    }
-                    let table = parts[parts.count - 1]
-                    let database = parts.count >= 2 ? parts[parts.count - 2] : nil
-                    var reference = ScopeTable(alias: nil, database: database, table: table, derivedColumns: nil)
-                    if database == nil, let cteColumns = ctes[table.lowercased()] { reference.derivedColumns = cteColumns }
-                    if let (alias, next) = parseAlias(tokens: tokens, words: words, at: index, lexer: lexer) {
-                        reference.alias = alias
-                        index = next
-                    }
-                    result.append(reference)
-                }
-                if index < tokens.count, lexer.text(of: tokens[index]) == ",", word == "FROM" {
-                    index += 1
-                    parsingList = true
-                }
-            }
-        }
-        return result
-    }
-
-    static func parseAlias(tokens: [SQLToken], words: [String], at index: Int, lexer: SQLLexer) -> (String, Int)? {
-        var index = index
-        if index < tokens.count, words[index] == "AS" { index += 1 }
-        guard index < tokens.count, isName(tokens[index]) else { return nil }
-        if tokens[index].kind == .keyword, aliasStopWords.contains(words[index]) { return nil }
-        return (lexer.identifierValue(of: tokens[index]), index + 1)
-    }
-
-    static func matchingParen(tokens: [SQLToken], open: Int, lexer: SQLLexer) -> Int {
-        var depth = 0
-        var index = open
-        while index < tokens.count {
-            let text = lexer.text(of: tokens[index])
-            if tokens[index].kind == .punctuation {
-                if text == "(" { depth += 1 }
-                if text == ")" {
-                    depth -= 1
-                    if depth == 0 { return index }
-                }
-            }
-            index += 1
-        }
-        return tokens.count
-    }
-
-    /// Output column names of `SELECT a, b AS c, t.d, count(*) AS n FROM …`.
-    static func derivedColumns(tokens: [SQLToken], lexer: SQLLexer) -> [String] {
-        guard let selectIndex = tokens.firstIndex(where: { lexer.text(of: $0).uppercased() == "SELECT" }) else { return [] }
-        var columns: [String] = []
-        var depth = 0
-        var item: [SQLToken] = []
-        // The output name is the item's last identifier: `b AS c` → c, `t.d` → d, `count(*) n` → n.
-        func flushItem() {
-            defer { item.removeAll() }
-            guard let last = item.last, isName(last) else { return }
-            columns.append(lexer.identifierValue(of: last))
-        }
-        for token in tokens[(selectIndex + 1)...] {
-            let text = lexer.text(of: token)
-            if token.kind == .punctuation {
-                if text == "(" { depth += 1 }
-                if text == ")" { depth -= 1 }
-            }
-            if depth == 0, token.kind == .keyword, text.uppercased() == "FROM" { break }
-            if depth == 0, text == "," {
-                flushItem()
-                continue
-            }
-            if depth == 0, token.kind == .keyword, text.uppercased() == "DISTINCT", item.isEmpty { continue }
-            item.append(token)
-        }
-        flushItem()
-        return columns
     }
 
     // MARK: Clause context

@@ -27,6 +27,11 @@ public struct QueryHistoryEntry: Codable, Identifiable, Hashable, Sendable {
 
 /// Per-connection query history, newest first, bounded, persisted as JSON (atomic writes).
 public actor QueryHistoryStore {
+    /// `History/` in the data directory: the app writes it, the `mcp` process reads it to mine joins.
+    public static var defaultDirectory: URL {
+        ProfileRepository.defaultDirectory.appendingPathComponent("History", isDirectory: true)
+    }
+
     public nonisolated let fileURL: URL
     private let maxEntries: Int
     private let maxStatementLength = 100_000

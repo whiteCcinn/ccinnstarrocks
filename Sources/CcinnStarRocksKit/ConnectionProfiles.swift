@@ -48,6 +48,11 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var mcpAllowPrivilegedAccount: Bool = false
     public var createdAt: Date
     public var lastConnectedAt: Date?
+    /// Set on every save; backups use it to tell which side of a conflict is newer.
+    public var updatedAt: Date?
+    /// Whether an AI may write knowledge (notes, relationships, glossary) for this connection's databases. Knowledge is
+    /// local to this Mac and never changes the cluster, so it is allowed on read-only AI access too.
+    public var mcpKnowledgeWrites: Bool = true
 
     public init(id: UUID = UUID(), name: String = "", host: String = "127.0.0.1", port: Int = 9030, username: String = "root",
                 defaultDatabase: String? = nil, defaultCatalog: String? = nil, color: ProfileColor = .none, isFavorite: Bool = false,
@@ -91,6 +96,8 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         mcpAllowPrivilegedAccount = (try? container.decodeIfPresent(Bool.self, forKey: .mcpAllowPrivilegedAccount)) ?? false
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+        updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt)
+        mcpKnowledgeWrites = (try? container.decodeIfPresent(Bool.self, forKey: .mcpKnowledgeWrites)) ?? true
     }
 
     public static func recents(_ profiles: [ConnectionProfile]) -> [ConnectionProfile] {
