@@ -202,12 +202,7 @@ extension StarRocksMCPTools {
         var entries = index.databases.filter { $0.key.cluster == cluster }
         var projectPayload: JSONValue = .null
         if let path = args.string("project_path") {
-            let target = KnowledgeMCP.expand(path, home: settings.home)
-            let project = index.projects.first { (candidate: KnowledgeIndex.Project) -> Bool in
-                let root = KnowledgeMCP.expand(candidate.path, home: settings.home)
-                return target == root || target.hasPrefix(root + "/")
-            }
-            if let project {
+            if let project = KnowledgeMCP.project(containing: path, in: index.projects, home: settings.home) {
                 let linked = Set(index.links.filter { $0.project == project.id }.map(\.database))
                 entries = entries.filter { linked.contains($0.id) }
                 projectPayload = ["name": .string(project.name), "path": .string(project.path), "git_remote": JSONValue(project.gitRemote)]

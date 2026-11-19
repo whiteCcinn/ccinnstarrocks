@@ -171,3 +171,30 @@ struct KnowledgeWriteTests {
         #expect(target.tombstones.contains { $0.id == inferred }, "a removed inferred relationship stays removed on refresh")
     }
 }
+
+@Suite("Knowledge acceptance fixes")
+struct KnowledgeAcceptanceFixTests {
+    // Found driving the real server: a project linked as /private/tmp/x was not found as /tmp/x/sub (or vice versa).
+    @Test func projectsMatchWhateverSymlinkSpellingTheClientUses() throws {
+        let real = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("ccinn-project-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: real.appendingPathComponent("internal"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: real) }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let stored = try KnowledgeMCP.projectPath(real.path, home: home) { _ in true }
+        let project = KnowledgeIndex.Project(id: "p", path: stored, name: "x", gitRemote: nil, addedAt: Date(), addedBy: "user")
+        let viaTmp = "/tmp/" + real.lastPathComponent + "/internal"
+        #expect(KnowledgeMCP.project(containing: viaTmp, in: [project], home: home)?.id == "p")
+        #expect(KnowledgeMCP.project(containing: real.path + "/internal", in: [project], home: home)?.id == "p")
+        #expect(KnowledgeMCP.project(containing: "/tmp/other", in: [project], home: home) == nil)
+    }
+
+    @Test func diagramTypesWithoutDisplayWidthsAndNoEmptyBlocks() throws {
+        #expect(MermaidERDRenderer.typeName("bigint(20)") == "bigint")
+        #expect(MermaidERDRenderer.typeName("tinyint(4)") == "tinyint")
+        #expect(MermaidERDRenderer.typeName("decimal(12,2)") == "decimal_12_2")
+        var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "sr://fe:9030"), catalog: "default_catalog", database: "d"))
+        knowledge.tables = [TableFacts(name: "v", kind: .view, columns: [ColumnFacts(name: "x", type: "bigint(20)")], fingerprint: "f", state: .fresh, firstSeen: Date())]
+        let diagram = try MermaidERDRenderer.render(tables: ["v"], in: knowledge, confidence: { _ in 100 }, title: "t")
+        #expect(diagram.mermaid == "erDiagram\n  v")
+    }
+}

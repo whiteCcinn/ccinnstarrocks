@@ -209,12 +209,28 @@ public enum KnowledgeMCP {
 
     // MARK: Projects
 
-    /// A project directory as stored: absolute, existing, neither `/` nor the home directory itself; `~`-relative under home.
+    /// One spelling per directory: `..` and symlinks resolved, `/private/tmp` and `/tmp` alike, so a path the AI client
+    /// reports matches the one the project was linked with.
+    public static func canonical(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// The linked project containing `path` (the project directory itself or anything inside it), if any.
+    public static func project(containing path: String, in projects: [KnowledgeIndex.Project], home: URL) -> KnowledgeIndex.Project? {
+        let target = canonical(expand(path, home: home))
+        return projects.first { (candidate: KnowledgeIndex.Project) -> Bool in
+            let root = canonical(expand(candidate.path, home: home))
+            return target == root || target.hasPrefix(root + "/")
+        }
+    }
+
+    /// A project directory as stored: absolute, existing, neither `/` nor the home directory itself; canonical, and
+    /// `~`-relative under home.
     public static func projectPath(_ path: String, home: URL, isDirectory: (String) -> Bool) throws -> String {
         let expanded = path.hasPrefix("~") ? home.path + path.dropFirst() : path
-        let standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
         guard expanded.hasPrefix("/") else { throw MCPToolError("project_path must be an absolute path.") }
-        let homePath = home.standardizedFileURL.path
+        let standardized = canonical(expanded)
+        let homePath = canonical(home.path)
         guard standardized != "/", standardized != homePath else {
             throw MCPToolError("project_path must be a project directory, not / or your home directory.")
         }
@@ -259,13 +275,7 @@ public enum KnowledgeMCP {
             switch type {
             case "code":
                 guard let path = object["path"]?.stringValue else { return nil }
-                let projectPath = object["project_path"]?.stringValue.map { expand($0, home: home) }
-                let project = projectPath.flatMap { (target: String) -> String? in
-                    projects.first { (candidate: KnowledgeIndex.Project) -> Bool in
-                        let root = expand(candidate.path, home: home)
-                        return target == root || target.hasPrefix(root + "/")
-                    }?.id
-                }
+                let project = object["project_path"]?.stringValue.flatMap { KnowledgeMCP.project(containing: $0, in: projects, home: home)?.id }
                 let line = object["line"]?.intValue.map { Int(clamping: $0) }
                 return Evidence(source: .code, project: project, path: clean(path, limit: 500), line: line,
                                 symbol: object["symbol"]?.stringValue.map { clean($0, limit: 200) }, rationale: note, by: by, at: now)

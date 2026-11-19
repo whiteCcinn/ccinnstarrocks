@@ -161,6 +161,10 @@ public enum MermaidERDRenderer {
                 case .keys: return column.isKey || primary.contains(lowered) || related.contains(lowered)
                 }
             }
+            guard !shown.isEmpty else {
+                lines.append("  \(identifier)") // no attribute block: an empty one is not valid in every Mermaid version
+                continue
+            }
             lines.append("  \(identifier) {")
             for column in shown {
                 let lowered = column.name.lowercased()
@@ -168,7 +172,7 @@ public enum MermaidERDRenderer {
                 if primary.contains(lowered) { markers.append("PK") }
                 if related.contains(lowered), !primary.contains(lowered) { markers.append("FK") }
                 let marker = markers.isEmpty ? "" : " " + markers.joined(separator: ", ")
-                lines.append("    \(Self.identifier(column.type)) \(Self.identifier(column.name))\(marker)")
+                lines.append("    \(Self.typeName(column.type)) \(Self.identifier(column.name))\(marker)")
             }
             lines.append("  }")
         }
@@ -222,6 +226,16 @@ public enum MermaidERDRenderer {
         if result.isEmpty { return "t" }
         if let first = result.unicodeScalars.first, (0x30...0x39).contains(first.value) { result = "t_" + result }
         return result
+    }
+
+    /// `bigint(20)` → `bigint` (a display width, not a type); `decimal(12,2)` → `decimal_12_2`.
+    static func typeName(_ type: String) -> String {
+        let lowered = type.lowercased()
+        for integer in ["tinyint", "smallint", "mediumint", "int", "integer", "bigint", "largeint"] where lowered.hasPrefix(integer + "(") {
+            let rest = lowered.dropFirst(integer.count)
+            if rest.dropFirst().dropLast().allSatisfy(\.isNumber), rest.hasSuffix(")") { return integer }
+        }
+        return identifier(type)
     }
 
     static func commentSafe(_ text: String) -> String {
