@@ -90,6 +90,7 @@ CcinnStarRocks 把这些信息都放在一次点击之内。它是原生的 Swif
   - 可选启用 `mysql_clear_password` 以支持 LDAP 用户。
   - 可选在执行修改数据或结构的语句前二次确认；修改集群配置的语句（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`）始终需要二次确认。
 - **通过 MCP 接入 AI**：内置 Model Context Protocol 服务，让 Claude Code、Codex、Claude Desktop 查询你授权的连接（默认只读），详见 [MCP 服务](#mcp-服务让-ai-查询-starrocks)。
+- **AI 构建一次、反复复用的知识库**：按数据库记录表与表之间的关系（来自声明的约束、视图定义、你的查询历史、命名，以及 AI 读到的代码）、注释说明、任意语言的术语表、主题域与 ER 图，并关联到本地项目。之后的会话直接查知识库，不必重新摸索表结构。详见[知识库](#知识库)。
 - **默认安全**：密码保存在 macOS 钥匙串中；除非启用 AI 访问，不会收集或发送任何数据。
 
 ## 兼容性
@@ -190,8 +191,24 @@ CcinnStarRocks 内置 **Model Context Protocol** 服务，**Claude Code**、**Co
 | 表洞察 | `get_partitions`、`analyze_tablet_skew`、`get_materialized_view` |
 | 集群 | `get_running_tasks`、`list_cluster_nodes` |
 | SQL | `run_query`、`explain_query`，以及 `execute_statement`（仅限读写连接） |
+| 知识库（读） | `list_knowledge`、`knowledge_overview`、`search_knowledge`、`explain_table`、`find_join_path`、`er_diagram`、`refresh_knowledge` |
+| 知识库（写） | `link_project`、`add_notes`、`add_relationships`、`define_terms`、`define_subject_area`、`remove_knowledge` |
+
+提示词（prompts）：`build_knowledge`（分析当前项目和一个数据库并记录结论）和 `answer_with_knowledge`（写 SQL 前先查知识库）。Claude Code 中可用 `/mcp__ccinnstarrocks__build_knowledge` 调用。
 
 `list_tables` 会返回每个对象的类型（表、异步或同步物化视图、视图、外表）、数据模型，以及物化视图的刷新健康状态。
+
+### 知识库
+
+StarRocks 没有外键，真正关键的关联（如 `report_adx_hour.dsp_id` → `dsp.id`）只存在于人的记忆、代码和查询历史里。知识库把它们连同 AI 准确快速作答所需的其他信息一起记录下来，供每个 AI 会话复用。
+
+- **应用内不内置 AI。** CcinnStarRocks 只读取元数据（从不读取数据行）并做确定性推断；打开了代码仓库的 AI 客户端负责读代码，再通过知识库工具把结论写回。
+- **每个数据库一份知识库**，以集群地址为键（经 SSH 隧道时包含跳板机），所有连到该集群的连接共享，并可关联任意多个本地项目。在已关联项目中启动的会话用 `list_knowledge` 即可找到。
+- **每条关系都带证据**：声明的 `foreign_key_constraints`、视图与物化视图定义中的 JOIN、编辑器查询历史中的 JOIN、表名与列名、代码引用（路径、行号、符号）以及 AI 的判断。置信度（0–100）由证据计算；只有你确认过的或约束声明的才算事实，其余一律标注为*推断*。你在应用里的「确认 / 否定」始终优先。
+- **新鲜度。** 每张表的结构都有指纹。表结构变化后，基于旧结构写下的说明和关系会标为过期，直到有人重新确认；已删除的表会保留，直到你手动清理。
+- **给答案，而不只是画图。** `find_join_path` 返回连接路径、`ON` 条件、SQL 骨架，并在行数会被放大时给出警告（两张事实表经同一维度表相连）。`explain_table` 还会给出提示，例如「按分区键 `dt` 过滤」「AGG 模型：指标列已预聚合」。`er_diagram` 按主题域、表清单、某张表的周边或名称前缀生成 Mermaid 图，不会把几百张表塞进一张图。
+- **在应用中**：右键数据库 → **Knowledge**：刷新、审核推断出的关系（确认 / 否定）、说明与术语表、主题域的 ER 图（复制 Mermaid），以及关联的项目（关联、重新定位、取消关联）。
+- 文件保存在 `~/Library/Application Support/CcinnStarRocks/Knowledge/`（仅本人可读写），应用与 `mcp` 进程可安全地同时使用。
 
 **安全**
 
@@ -220,7 +237,10 @@ CcinnStarRocks 内置 **Model Context Protocol** 服务，**Claude Code**、**Co
 - 在 AI 客户端取消请求时会发送 `KILL QUERY`。
 - `execute_statement` 不会修改集群配置（`SET GLOBAL`、`ADMIN SET … CONFIG`、`UPDATE information_schema.be_configs`），这类修改必须在应用内二次确认。
 - `--read-only` 把所有连接限制为只读；`--profile <名称>` 指定默认连接。
-- 每次调用都会记录到 `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`。
+- 每次调用都会记录到 `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`，包含 AI 客户端名称；写入知识库时还会记录改了什么。
+- **知识库跟随账号权限。** AI 只能看到已开启 AI 访问的连接的知识库，并且只包含该连接账号能看到的数据库和表——即使知识库是通过权限更高的连接建立的。
+- **知识库不存数据。** 不保存数据行、样例值、DDL 或代码：只有结构、带证据的关系（路径、行号、符号、字面量已替换的 SQL 摘要）和说明。数据库注释、说明和术语文本以「不可信数据」的标注交给 AI，而不是指令。
+- **谁可以写。** AI 只写本机的知识库文件，从不改动集群，因此只读连接也允许写；可在 **Settings → MCP → AI may write knowledge** 按连接关闭，或用 `--no-knowledge-writes` 对整个服务关闭。你写下、确认或否定的内容，AI 永远无法修改或删除。
 
 ## 从源码构建
 

@@ -90,6 +90,7 @@ CcinnStarRocks puts all of that one click away, in a native SwiftUI/AppKit app w
   - LDAP users via an opt-in `mysql_clear_password`.
   - Optional confirmation before statements that change data or schema. Statements that change cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`) are always confirmed.
 - **AI access through MCP.** A built-in Model Context Protocol server lets Claude Code, Codex and Claude Desktop query the connections you opt in, read-only by default. See [MCP server](#mcp-server-let-ai-query-starrocks).
+- **A knowledge base the AI builds once and reuses.** Per database: how tables relate (from declared constraints, view definitions, your query history, names, and the code your AI reads), notes, a glossary in any language, subject areas and ER diagrams, linked to your local projects. Later sessions answer from it instead of rediscovering the schema. See [Knowledge base](#knowledge-base).
 - **Secure by default.** Passwords live in the macOS Keychain; nothing is collected or sent anywhere unless you enable AI access.
 
 ## Compatibility
@@ -190,8 +191,24 @@ CcinnStarRocks has a built-in **Model Context Protocol** server. AI assistants s
 | Table insights | `get_partitions`, `analyze_tablet_skew`, `get_materialized_view` |
 | Cluster | `get_running_tasks`, `list_cluster_nodes` |
 | SQL | `run_query`, `explain_query`, and `execute_statement` (read & write connections only) |
+| Knowledge (read) | `list_knowledge`, `knowledge_overview`, `search_knowledge`, `explain_table`, `find_join_path`, `er_diagram`, `refresh_knowledge` |
+| Knowledge (write) | `link_project`, `add_notes`, `add_relationships`, `define_terms`, `define_subject_area`, `remove_knowledge` |
+
+Prompts: `build_knowledge` (analyse this project and a database, and record what it finds) and `answer_with_knowledge` (look things up before writing SQL). Claude Code offers them as `/mcp__ccinnstarrocks__build_knowledge`.
 
 `list_tables` reports each object's kind (table, async or sync materialized view, view, external table), its model and the refresh health of materialized views.
+
+### Knowledge base
+
+StarRocks has no foreign keys, so the joins that matter (`report_adx_hour.dsp_id` → `dsp.id`) live in people's heads, in code and in query history. The knowledge base keeps them, with everything else an AI needs to answer quickly and correctly, and every AI session reuses it.
+
+- **No AI inside the app.** CcinnStarRocks reads metadata (never rows) and infers what it can; your AI client, which has the repository open, does the reading of code and writes back what it learns through the knowledge tools.
+- **One knowledge base per database**, keyed by the cluster's endpoint (through the SSH bastion when tunnelled), shared by every connection that reaches it, and linked to any number of local projects. A session started in a linked project finds it with `list_knowledge`.
+- **Relationships carry their evidence**: declared `foreign_key_constraints`, joins inside view and materialized-view definitions, joins in the editor's query history, column and table names, code references (path, line, symbol) and AI assertions. Confidence (0–100) is computed from the evidence; only what you confirmed or what a constraint declares is a fact, everything else is labelled *inferred*. Your Confirm or Reject in the app always wins.
+- **Freshness.** Each table's structure has a fingerprint. When a table changes, notes and relationships written against it are marked stale until someone confirms them again; dropped tables are kept until you prune them.
+- **Answers, not just pictures.** `find_join_path` returns the join chain with its `ON` conditions, a SQL skeleton and a warning when rows would multiply (two fact tables through one dimension). `explain_table` adds hints such as "filter on the partition key `dt`" and "AGG model: value columns are pre-aggregated". `er_diagram` draws a Mermaid diagram of one subject area, a list of tables, the tables around one, or a prefix — never one diagram of hundreds of tables.
+- **In the app**: right-click a database → **Knowledge**: refresh, review inferred relationships (Confirm / Reject), notes and glossary, the diagram of a subject area (Copy Mermaid), and linked projects (Link, Remap, Unlink).
+- Files live in `~/Library/Application Support/CcinnStarRocks/Knowledge/` (owner-only); the app and the `mcp` process share them safely.
 
 **Safety**
 
@@ -207,7 +224,10 @@ CcinnStarRocks has a built-in **Model Context Protocol** server. AI assistants s
 - Cancelling a request in the AI client sends `KILL QUERY`.
 - `execute_statement` never changes cluster settings (`SET GLOBAL`, `ADMIN SET … CONFIG`, `UPDATE information_schema.be_configs`): those need a confirmation in the app.
 - `--read-only` caps every connection at read-only; `--profile <name>` picks the default connection.
-- Every call is logged to `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`.
+- Every call is logged to `~/Library/Application Support/CcinnStarRocks/mcp-audit.jsonl`, with the AI client's name and, for knowledge writes, what changed.
+- **Knowledge follows the account.** An AI sees knowledge only for connections with AI access, and only the databases and tables that connection's account can see, even when the knowledge was built through a more privileged connection.
+- **Knowledge holds no data.** No rows, sample values, DDL or code are stored: structure, relationships with evidence (paths, lines, symbols, SQL digests with literals replaced) and notes. Database comments, notes and glossary text reach the AI marked as untrusted data, not instructions.
+- **Who may write.** AI writes only local knowledge files, never the cluster, so it is allowed on read-only connections; turn it off per connection with **Settings → MCP → AI may write knowledge**, or for the whole server with `--no-knowledge-writes`. AI can never change or remove what you wrote, confirmed or rejected.
 
 ## Building from source
 
