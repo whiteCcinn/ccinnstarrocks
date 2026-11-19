@@ -96,10 +96,8 @@ public enum BackupImportPlanner {
         let history = (bundle.payload.history ?? []).map { (group: BackupHistory) -> BackupHistoryItem in
             BackupHistoryItem(profileID: group.profile, entries: group.entries.map(BackupHistoryFiles.sanitized))
         }
-        var localHistory: [UUID: Set<UUID>] = [:]
-        for (profileID, entries) in local.history { localHistory[profileID] = Set(entries.map(\.id)) }
         return BackupImportPlan(isAuthenticated: bundle.isAuthenticated, profiles: profiles, knowledge: knowledge, settings: settings,
-                                history: history, warnings: warnings, localHistory: localHistory)
+                                history: history, warnings: warnings, localHistory: local.history)
     }
 
     // MARK: Profiles
@@ -131,6 +129,22 @@ public enum BackupImportPlanner {
             used.insert(match.id)
         }
         return result
+    }
+
+    /// Where a profile's credentials go: the endpoint plus the SSH port, user and authentication. A change sends the
+    /// stored password, or the SSH secret as a password, somewhere it was not given for.
+    struct RouteKey: Hashable {
+        let endpoint: EndpointKey
+        let sshPort: Int?
+        let sshUsername: String?
+        let sshAuthentication: String?
+
+        init(_ profile: ConnectionProfile) {
+            endpoint = EndpointKey(profile)
+            sshPort = profile.ssh?.port
+            sshUsername = profile.ssh.map { $0.username.trimmingCharacters(in: .whitespaces) }
+            sshAuthentication = profile.ssh?.authentication.rawValue
+        }
     }
 
     /// Host (normalized like `ClusterKey`), port, user name and SSH host: what makes two profiles the same account.
@@ -172,7 +186,7 @@ public enum BackupImportPlanner {
             if secretsDiffer { flags.insert(.secretsDiffer) }
             if isKeyMissing(candidate, home: home, fileExists: fileExists) { flags.insert(.missingSSHKey) }
             if let localProfile {
-                if match?.kind == .id, EndpointKey(candidate) != EndpointKey(localProfile) { flags.insert(.endpointChanged) }
+                if RouteKey(candidate) != RouteKey(localProfile) { flags.insert(.endpointChanged) }
                 if candidate.allowCleartextPassword && !localProfile.allowCleartextPassword { flags.insert(.cleartextPasswordEnabled) }
                 if localProfile.confirmMutations && !candidate.confirmMutations { flags.insert(.mutationConfirmationDisabled) }
             }

@@ -64,6 +64,9 @@ public enum BackupWarning: Sendable, Hashable, CustomStringConvertible {
     case databaseNotExported(DatabaseKey)
     case secretNotExported(String)
     case historyNotExported(String)
+    // Restoring
+    /// The snapshot does not hold this part (knowledge, settings or one database), so it was left as the import made it.
+    case notRestored(String)
 
     public var description: String {
         switch self {
@@ -84,6 +87,7 @@ public enum BackupWarning: Sendable, Hashable, CustomStringConvertible {
         case let .databaseNotExported(key): "Knowledge for \(key) could not be read and was not included."
         case let .secretNotExported(name): "The passwords of “\(name)” could not be read from the Keychain and were not included."
         case let .historyNotExported(name): "The history of “\(name)” could not be read and was not included."
+        case let .notRestored(part): "The pre-import snapshot does not include \(part); it was left as the import made it."
         }
     }
 }

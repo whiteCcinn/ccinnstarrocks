@@ -131,6 +131,7 @@ struct BackupExporterTests {
         var options = BackupExportOptions()
         options.passphrase = F.passphrase
         let url = mac.directory.appendingPathComponent("out/settings.ccinnstarrocks-backup")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let export = try mac.exporter().export(options, appVersion: "1.4.0", now: F.referenceDate, iterations: F.testIterations)
         try BackupFormat.write(export.data, to: url)
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -140,6 +141,29 @@ struct BackupExporterTests {
         #expect(!bytes.contains(F.sshSecret))
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
         #expect(leftovers == ["settings.ccinnstarrocks-backup"], "no temporary files stay behind")
+    }
+
+    @Test func writingLeavesTheChosenFolderAsItWas() throws {
+        let mac = try SourceMac()
+        defer { mac.remove() }
+        let folder = mac.directory.appendingPathComponent("Shared", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        let url = folder.appendingPathComponent("settings.ccinnstarrocks-backup")
+        try BackupFormat.write(try mac.exporter().export(BackupExportOptions(), appVersion: "1.4.0", now: F.referenceDate).data, to: url)
+        let folderAttributes = try FileManager.default.attributesOfItem(atPath: folder.path)
+        #expect((folderAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o755)
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
+
+    @Test func optionsNeverShowThePassphrase() {
+        var options = BackupExportOptions()
+        options.passphrase = F.passphrase
+        #expect(!String(describing: options).contains(F.passphrase))
+        #expect(!String(reflecting: options).contains(F.passphrase))
+        var dumped = ""
+        dump(options, to: &dumped)
+        #expect(!dumped.contains(F.passphrase))
     }
 
     @Test func unreadableSecretsAreReportedNotFatal() throws {

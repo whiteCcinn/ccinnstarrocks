@@ -127,6 +127,26 @@ struct BackupProfilePlanTests {
         #expect(trusted.resolution == .useImported)
     }
 
+    @Test func anSSHRouteChangeIsAnEndpointChange() throws {
+        var local = F.tunnelledProfile(name: "tunnel", keyPath: "~/.ssh/id")
+        local.updatedAt = F.date(10)
+        var otherPort = local
+        otherPort.ssh?.port = 2222
+        otherPort.updatedAt = F.date(999_999)
+        var asPassword = local
+        asPassword.ssh?.authentication = .password
+        asPassword.updatedAt = F.date(999_999)
+        var renamed = local
+        renamed.id = UUID()
+        renamed.ssh?.port = 2222
+        renamed.updatedAt = F.date(999_999)
+        for imported in [otherPort, asPassword, renamed] {
+            let item = try onlyItem(F.plan(F.bundle(payload([imported])), local: F.localState(profiles: [local])))
+            #expect(item.flags.contains(.endpointChanged))
+            #expect(item.resolution == .keepMine, "the SSH secret would follow the profile to another port or be sent as a password")
+        }
+    }
+
     @Test func anUnauthenticatedBackupNeverLoosensASafeguardByDefault() throws {
         var local = F.profile(name: "prod", host: "fe.prod", updatedAt: F.date(10))
         local.confirmMutations = true
@@ -242,6 +262,20 @@ struct BackupContentPlanTests {
         #expect(again.merged == merged && again.changes.isEmpty, "merging twice changes nothing")
     }
 
+    @Test func hostileKnowledgeCannotMakeMergingQuadratic() {
+        let from = Relationship.End(table: "a", columns: ["x"])
+        let to = Relationship.End(table: "b", columns: ["y"])
+        let flood = (0..<50_000).map { Evidence(source: .naming, score: $0 % 100, line: $0, at: F.date(Double($0))) }
+        var imported = F.knowledge()
+        imported.relationships = [Relationship(from: from, to: to, kind: .manyToOne, evidence: [Evidence(source: .naming, score: 1)]),
+                                  Relationship(from: from, to: to, kind: .manyToOne, evidence: flood)]
+        let started = ContinuousClock.now
+        let (merged, _) = BackupKnowledgeMerge.merge(local: nil, imported: imported)
+        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(merged.relationships.count == 1)
+        #expect((merged.relationships.first?.evidence.count ?? 0) <= BackupKnowledgeMerge.maximumEvidence)
+    }
+
     @Test func tombstonesAreHonouredBothWays() {
         var local = F.knowledge(notes: [F.note("n2", text: "deleted on the other Mac", at: 10)])
         local.tombstones = [Tombstone(id: "n1", deletedAt: F.date(30), by: "user")]
@@ -339,7 +373,7 @@ struct BackupContentPlanTests {
         let plan = F.plan(bundle, local: F.localState(profiles: [local], history: [local.id: localEntries]))
         let change = try #require(plan.historyChanges.first)
         #expect(change.profileID == local.id, "history follows the profile to its local id")
-        #expect(change.newEntries == 601)
+        #expect(change.newEntries == 500, "only imported entries that survive the 1,000-entry cap count")
 
         let merged = BackupHistoryFiles.merge(local: localEntries, imported: try #require(plan.history.first).entries)
         #expect(merged.count == 1_000)
@@ -347,6 +381,16 @@ struct BackupContentPlanTests {
         #expect(merged.filter { $0.id == shared.id }.count == 1, "union by entry id")
         let dates = merged.map(\.executedAt)
         #expect(dates == dates.sorted(by: >))
+    }
+
+    @Test func olderHistoryThatFallsOffTheCapChangesNothing() throws {
+        let profile = F.profile(name: "prod", host: "fe.prod")
+        let localEntries = (0..<1_000).map { F.historyEntry("SELECT \($0)", at: Double(10_000 - $0)) }
+        let older = (0..<10).map { F.historyEntry("SELECT old \($0)", at: Double(-$0)) }
+        let bundle = F.bundle(payload([profile], history: [BackupHistory(profile: profile.id, entries: older)]))
+        let plan = F.plan(bundle, local: F.localState(profiles: [profile], history: [profile.id: localEntries]))
+        #expect(plan.historyChanges.isEmpty)
+        #expect(plan.isUnchanged, "no snapshot is written for entries the cap would drop again")
     }
 
     @Test func reimportingTheSameBundleChangesNothing() throws {

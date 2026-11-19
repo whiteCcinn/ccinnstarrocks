@@ -17,6 +17,12 @@ public struct BackupImportReport: Sendable {
     public internal(set) var databasesMerged = 0
     public internal(set) var historyEntriesAdded = 0
     public internal(set) var settingsChanged = 0
+    // What the import wrote, so `restore` undoes exactly that and nothing else.
+    var writtenDatabases: [DatabaseKey] = []
+    var createdDatabases: [DatabaseKey] = []
+    var changedKnowledgeIndex = false
+    var changedHistory: [UUID] = []
+    var changedSettings: [String] = []
 
     public var succeeded: Bool { failedStep == nil }
     /// AI clients' `mcp` servers read profiles once at startup; they need a restart to see these changes.
@@ -75,12 +81,12 @@ public struct BackupImportApplier {
 
             step = .knowledge
             if let knowledgePlan = plan.knowledge, !knowledgePlan.isUnchanged {
-                report.databasesMerged = try applyKnowledge(knowledgePlan, warnings: &report.warnings)
+                try applyKnowledge(knowledgePlan, report: &report)
             }
             report.completedSteps.append(step)
 
             step = .history
-            report.historyEntriesAdded = try applyHistory(plan.historyChanges)
+            try applyHistory(plan.historyChanges, report: &report)
             report.completedSteps.append(step)
 
             step = .secrets
@@ -98,6 +104,7 @@ public struct BackupImportApplier {
 
             step = .settings
             for item in plan.settingChanges {
+                report.changedSettings.append(item.key)
                 try writeSetting(item.key, item.imported)
                 report.settingsChanged += 1
             }
@@ -127,42 +134,45 @@ public struct BackupImportApplier {
         return result
     }
 
-    private func applyKnowledge(_ plan: BackupKnowledgePlan, warnings: inout [BackupWarning]) throws -> Int {
-        var merged = 0
+    private func applyKnowledge(_ plan: BackupKnowledgePlan, report: inout BackupImportReport) throws {
         for item in plan.databases where item.status == .new || item.status == .merged {
             guard let imported = plan.importedDatabases[item.key] else { continue }
             do {
-                if let current = try knowledge.database(item.key), BackupKnowledgeMerge.merge(local: current, imported: imported).merged == current {
-                    continue
+                let current = try knowledge.database(item.key)
+                if let current, BackupKnowledgeMerge.merge(local: current, imported: imported).merged == current { continue }
+                // Recorded first: a write that fails halfway may still have created the file.
+                report.writtenDatabases.append(item.key)
+                if current == nil {
+                    report.createdDatabases.append(item.key)
+                    report.changedKnowledgeIndex = true
                 }
                 try knowledge.updateDatabase(item.key) { (database: inout DatabaseKnowledge) -> Void in
                     database = BackupKnowledgeMerge.merge(local: database, imported: imported).merged
                 }
-                merged += 1
+                report.databasesMerged += 1
             } catch KnowledgeStore.Failure.newerFormat(_) {
-                warnings.append(.localDatabaseNotWritable(item.key))
+                report.warnings.append(.localDatabaseNotWritable(item.key))
             }
         }
         let current = try knowledge.index()
         if plan.mergedIndex(into: current) != current {
+            report.changedKnowledgeIndex = true
             try knowledge.updateIndex { (index: inout KnowledgeIndex) -> Void in
                 index = plan.mergedIndex(into: index)
             }
         }
-        return merged
     }
 
-    private func applyHistory(_ changes: [BackupHistoryChange]) throws -> Int {
-        var added = 0
+    private func applyHistory(_ changes: [BackupHistoryChange], report: inout BackupImportReport) throws {
         for change in changes {
             let current = try BackupHistoryFiles.read(for: change.profileID, in: historyDirectory)
-            let count = BackupHistoryFiles.newEntryCount(local: Set(current.map(\.id)), imported: change.entries)
+            let count = BackupHistoryFiles.addedEntryCount(local: current, imported: change.entries)
             guard count > 0 else { continue }
+            report.changedHistory.append(change.profileID)
             try BackupHistoryFiles.write(BackupHistoryFiles.merge(local: current, imported: change.entries), for: change.profileID,
                                          in: historyDirectory)
-            added += count
+            report.historyEntriesAdded += count
         }
-        return added
     }
 
     // MARK: Snapshots
@@ -170,9 +180,9 @@ public struct BackupImportApplier {
     /// `<snapshot directory>/pre-import-<UTC timestamp>.ccinnstarrocks-backup`, 0600; older ones beyond five removed.
     func writeSnapshot(now: Date) throws -> URL {
         let data = try makeSnapshot()
-        guard let newline = data.firstIndex(of: 0x0A),
-              let header = try? BackupFormat.headerDecoder.decode(BackupHeader.self, from: data[data.startIndex..<newline]),
-              header.secrets == nil else { throw BackupError.invalid("the pre-import snapshot must not contain secrets") }
+        // A snapshot that cannot be read back could not be restored: refuse to import rather than find out later.
+        let snapshot = try BackupFormat.decode(data)
+        guard snapshot.header.secrets == nil else { throw BackupError.invalid("the pre-import snapshot must not contain secrets") }
         var date = now
         var url = snapshotURL(for: date)
         var attempts = 0
@@ -207,35 +217,50 @@ public struct BackupImportApplier {
 
     // MARK: Restoring
 
-    /// Puts back what a pre-import snapshot holds: knowledge (database files the snapshot lacks are removed), history of
-    /// its profiles, the profile list (through `replaceProfiles`) and the whitelisted settings. Secrets are never in a
-    /// snapshot: ones the import added stay, ones it replaced cannot be restored.
-    public func restore(from url: URL, replaceProfiles: ([ConnectionProfile]) throws -> Void) -> BackupImportReport {
+    /// Undoes what the import behind `importReport` wrote, from its pre-import snapshot: the knowledge files it changed
+    /// (files it created are removed; files it never touched stay as they are) and the index, the histories it extended,
+    /// the profile list (through `replaceProfiles`) and the settings it changed. Secrets are never in a snapshot: ones
+    /// the import added stay in the Keychain, ones it replaced cannot be restored.
+    public func restore(_ importReport: BackupImportReport, replaceProfiles: ([ConnectionProfile]) throws -> Void) -> BackupImportReport {
         var report = BackupImportReport()
-        report.snapshotURL = url
+        report.snapshotURL = importReport.snapshotURL
         var step = BackupImportReport.Step.snapshot
         do {
+            guard let url = importReport.snapshotURL else { throw BackupError.invalid("this import has no pre-import snapshot") }
             let snapshot = try BackupFormat.read(contentsOf: url).payload
             report.completedSteps.append(step)
 
             step = .knowledge
-            if let section = snapshot.knowledge { try restoreKnowledge(section) }
+            let touchedKnowledge = importReport.changedKnowledgeIndex || !importReport.writtenDatabases.isEmpty
+            if touchedKnowledge {
+                if let section = snapshot.knowledge {
+                    try restoreKnowledge(section, after: importReport, warnings: &report.warnings)
+                } else {
+                    report.warnings.append(.notRestored("knowledge"))
+                }
+            }
             report.completedSteps.append(step)
 
             step = .history
-            if let history = snapshot.history { try restoreHistory(history, profiles: snapshot.profiles) }
+            try restoreHistory(snapshot.history ?? [], profiles: importReport.changedHistory)
             report.completedSteps.append(step)
 
             step = .profiles
-            try replaceProfiles(snapshot.profiles)
-            report.profilesSaved = snapshot.profiles.count
+            if importReport.profilesSaved > 0 || importReport.failedStep == .profiles {
+                try replaceProfiles(snapshot.profiles)
+                report.profilesSaved = snapshot.profiles.count
+            }
             report.completedSteps.append(step)
 
             step = .settings
-            if let settings = snapshot.settings {
-                for key in BackupSettings.keys {
-                    try writeSetting(key, settings[key])
-                    report.settingsChanged += 1
+            if !importReport.changedSettings.isEmpty {
+                if let settings = snapshot.settings {
+                    for key in importReport.changedSettings {
+                        try writeSetting(key, settings[key])
+                        report.settingsChanged += 1
+                    }
+                } else {
+                    report.warnings.append(.notRestored("settings"))
                 }
             }
             report.completedSteps.append(step)
@@ -246,41 +271,49 @@ public struct BackupImportApplier {
         return report
     }
 
-    /// Replaces the knowledge files under the lock, with revisions above the current ones so caches reload.
-    private func restoreKnowledge(_ section: BackupKnowledge) throws {
+    /// Under the knowledge lock, with revisions above the current ones so caches reload.
+    private func restoreKnowledge(_ section: BackupKnowledge, after importReport: BackupImportReport, warnings: inout [BackupWarning]) throws {
         try SecureFile.createDirectory(knowledge.directory)
         try FileLock.withLock(at: knowledge.lockURL) {
             let encoder = KnowledgeStore.encoder
-            let databasesDirectory = knowledge.directory.appendingPathComponent("databases", isDirectory: true)
-            let kept = Set(section.databases.map { $0.key.fileID + ".json" })
-            let existing = (try? FileManager.default.contentsOfDirectory(atPath: databasesDirectory.path)) ?? []
-            for name in existing where name.hasSuffix(".json") && !kept.contains(name) {
-                try FileManager.default.removeItem(at: databasesDirectory.appendingPathComponent(name))
+            var snapshotDatabases: [DatabaseKey: DatabaseKnowledge] = [:]
+            for database in section.databases { snapshotDatabases[database.key] = database }
+            let created = Set(importReport.createdDatabases)
+            for key in importReport.writtenDatabases {
+                let url = knowledge.databaseURL(key)
+                if created.contains(key) {
+                    if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                } else if var restored = snapshotDatabases[key] {
+                    let currentRevision = (try? knowledge.database(key))?.revision ?? 0
+                    restored.revision = Self.nextRevision(after: max(currentRevision, restored.revision))
+                    try SecureFile.write(try encoder.encode(restored), to: url)
+                } else {
+                    warnings.append(.notRestored(key.description))
+                }
             }
-            for database in section.databases {
-                var restored = database
-                let currentRevision = (try? knowledge.database(database.key))?.revision ?? 0
-                restored.revision = max(currentRevision, database.revision) + 1
-                try SecureFile.write(try encoder.encode(restored), to: knowledge.databaseURL(database.key))
-            }
+            guard importReport.changedKnowledgeIndex else { return }
             var index = section.index
             let currentRevision = (try? knowledge.index())?.revision ?? 0
-            index.revision = max(currentRevision, index.revision) + 1
+            index.revision = Self.nextRevision(after: max(currentRevision, index.revision))
             index.updatedAt = Date()
             try SecureFile.write(try encoder.encode(index), to: knowledge.indexURL)
         }
     }
 
-    /// Writes each snapshot profile's history; a readable file of a profile that had none then is removed (the import
-    /// created it). An unreadable file is left alone: the import never writes over one.
-    private func restoreHistory(_ history: [BackupHistory], profiles: [ConnectionProfile]) throws {
+    static func nextRevision(after revision: Int) -> Int {
+        revision < Int.max ? revision + 1 : Int.max
+    }
+
+    /// Puts back the snapshot's history of each profile the import extended; a profile the snapshot has no history for
+    /// had none, so its file is removed.
+    private func restoreHistory(_ history: [BackupHistory], profiles: [UUID]) throws {
         var groups: [UUID: [QueryHistoryEntry]] = [:]
         for group in history where groups[group.profile] == nil { groups[group.profile] = group.entries }
-        for profile in profiles {
-            if let entries = groups[profile.id] {
-                try BackupHistoryFiles.write(entries, for: profile.id, in: historyDirectory)
-            } else if (try? BackupHistoryFiles.read(for: profile.id, in: historyDirectory)) != nil {
-                try BackupHistoryFiles.remove(for: profile.id, in: historyDirectory)
+        for profileID in profiles {
+            if let entries = groups[profileID] {
+                try BackupHistoryFiles.write(entries, for: profileID, in: historyDirectory)
+            } else {
+                try BackupHistoryFiles.remove(for: profileID, in: historyDirectory)
             }
         }
     }

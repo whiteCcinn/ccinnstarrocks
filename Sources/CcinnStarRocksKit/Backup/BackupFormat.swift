@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Writes and reads `.ccinnstarrocks-backup` files: UTF-8, line 1 the header JSON, line 2 the payload JSON. The header
@@ -34,7 +35,7 @@ public enum BackupFormat {
         if let passphrase, !isAcceptablePassphrase(passphrase) { throw BackupError.passphraseTooShort }
         let payloadData: Data
         do {
-            payloadData = try payloadEncoder.encode(payload)
+            payloadData = BackupValidation.replacingForbiddenControlCharacters(in: try payloadEncoder.encode(payload))
         } catch {
             throw BackupError.malformed("the content cannot be encoded")
         }
@@ -58,9 +59,47 @@ public enum BackupFormat {
         return file
     }
 
-    /// Writes the file 0600, atomically (`SecureFile`).
+    /// Writes the file 0600, atomically, into an existing folder the user chose. Unlike `SecureFile.write` it never
+    /// creates the folder or changes its permissions (`~`, `/Users/Shared`).
     public static func write(_ data: Data, to url: URL) throws {
-        try SecureFile.write(data, to: url)
+        let directory = url.deletingLastPathComponent()
+        var template = Array(directory.appendingPathComponent(".\(url.lastPathComponent).XXXXXX").path.utf8CString)
+        let descriptor: Int32 = template.withUnsafeMutableBufferPointer { (buffer: inout UnsafeMutableBufferPointer<CChar>) -> Int32 in
+            guard let base = buffer.baseAddress else { return -1 }
+            return mkstemp(base) // created 0600
+        }
+        guard descriptor >= 0 else { throw SecureFile.posixError() }
+        let pathBytes = template.prefix { $0 != 0 }.map { (character: CChar) -> UInt8 in UInt8(bitPattern: character) }
+        let temporaryPath = String(decoding: pathBytes, as: UTF8.self)
+        do {
+            defer { close(descriptor) }
+            try writeAll(data, to: descriptor)
+            guard fsync(descriptor) == 0 else { throw SecureFile.posixError() }
+        } catch {
+            unlink(temporaryPath)
+            throw error
+        }
+        guard rename(temporaryPath, url.path) == 0 else {
+            let failure = SecureFile.posixError()
+            unlink(temporaryPath)
+            throw failure
+        }
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Void in
+            guard var pointer = bytes.baseAddress else { return }
+            var remaining: Int = bytes.count
+            while remaining > 0 {
+                let written: Int = Darwin.write(descriptor, pointer, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw SecureFile.posixError()
+                }
+                remaining -= written
+                pointer = pointer.advanced(by: written)
+            }
+        }
     }
 
     // MARK: Reading

@@ -5,7 +5,9 @@ import Security
 
 /// Seals a backup's secrets with a passphrase.
 ///
-/// - PBKDF2-HMAC-SHA256 (`iterations`, a random 16-byte salt) derives 64 bytes: an AES-256 key and a check key.
+/// - PBKDF2-HMAC-SHA256 (`iterations`, a random 16-byte salt) derives one 32-byte block, which HKDF-SHA256 expands
+///   into an AES-256 key and a check key. (Asking PBKDF2 for 64 bytes would run it twice, doubling the user's cost but
+///   not an attacker's, who needs only the block the check depends on.)
 /// - `key_check` = HMAC-SHA256(check key, "ccinnstarrocks-backup-key-check"), first 16 bytes. It is compared before
 ///   anything is decrypted, so a wrong passphrase is told apart from a modified file.
 /// - AES-256-GCM with a random nonce authenticates `"ccinnstarrocks-backup/1:" + payload SHA-256`: changing the payload
@@ -23,6 +25,8 @@ enum BackupCrypto {
     static let saltLength = 16
     static let keyCheckLength = 16
     static let keyCheckLabel = "ccinnstarrocks-backup-key-check"
+    static let encryptionKeyInfo = "ccinnstarrocks-backup/1 encryption key"
+    static let checkKeyInfo = "ccinnstarrocks-backup/1 check key"
     static let associatedDataPrefix = "ccinnstarrocks-backup/1:"
     /// Nonce (12) and tag (16).
     static let minimumSealedLength = 28
@@ -104,12 +108,13 @@ enum BackupCrypto {
             defer { BackupCrypto.wipe(&password) }
             guard !password.isEmpty else { throw BackupError.wrongPassphrase }
             guard let rounds = UInt32(exactly: iterations) else { throw BackupError.unsupportedEncryption("\(BackupCrypto.kdfName) × \(iterations)") }
-            var material = [UInt8](repeating: 0, count: 64)
+            var material = [UInt8](repeating: 0, count: 32)
             defer { BackupCrypto.wipe(&material) }
             let status = Self.derive(password: password, salt: salt, rounds: rounds, into: &material)
             guard status == Int32(kCCSuccess) else { throw BackupError.cryptographyUnavailable }
-            encryption = SymmetricKey(data: material[0..<32])
-            let checkKey = SymmetricKey(data: material[32..<64])
+            let master = SymmetricKey(data: material)
+            encryption = HKDF<SHA256>.expand(pseudoRandomKey: master, info: Data(BackupCrypto.encryptionKeyInfo.utf8), outputByteCount: 32)
+            let checkKey = HKDF<SHA256>.expand(pseudoRandomKey: master, info: Data(BackupCrypto.checkKeyInfo.utf8), outputByteCount: 32)
             let code = HMAC<SHA256>.authenticationCode(for: Data(BackupCrypto.keyCheckLabel.utf8), using: checkKey)
             check = Array(Array(code).prefix(BackupCrypto.keyCheckLength))
         }

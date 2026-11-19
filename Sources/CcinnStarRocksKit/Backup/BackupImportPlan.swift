@@ -11,8 +11,8 @@ public struct BackupImportPlan: Sendable {
     public internal(set) var settings: [BackupSettingItem]
     public internal(set) var history: [BackupHistoryItem]
     public internal(set) var warnings: [BackupWarning]
-    /// Entry ids of each local profile's history, to count what an import adds.
-    let localHistory: [UUID: Set<UUID>]
+    /// Each local profile's history, to count what an import adds after the 1,000-entry cap.
+    let localHistory: [UUID: [QueryHistoryEntry]]
 
     /// Nothing would be written with the current choices.
     public var isUnchanged: Bool {
@@ -89,7 +89,7 @@ public struct BackupImportPlan: Sendable {
         var changes: [BackupHistoryChange] = []
         for item in history {
             let target = mapping[item.profileID] ?? item.profileID
-            let count = BackupHistoryFiles.newEntryCount(local: localHistory[target] ?? [], imported: item.entries)
+            let count = BackupHistoryFiles.addedEntryCount(local: localHistory[target] ?? [], imported: item.entries)
             if count > 0 { changes.append(BackupHistoryChange(profileID: target, newEntries: count, entries: item.entries)) }
         }
         return changes
@@ -124,7 +124,8 @@ public struct BackupProfileItem: Sendable, Identifiable {
         case aiAccessChanged
         /// The backup turns on the privileged-account opt-in, but is not authenticated, so it was turned off.
         case privilegedOptInReset
-        /// Same id, another server or user: the local password would follow the profile to the new endpoint.
+        /// Another server, user or SSH route (port, user, authentication) than the local profile: the local password and
+        /// SSH secret would follow the profile there.
         case endpointChanged
         /// The imported profile allows sending the password in clear text; the local one does not.
         case cleartextPasswordEnabled
@@ -291,16 +292,27 @@ public struct BackupKnowledgePlan: Sendable {
     }
 
     private func mergeClusters(into merged: inout KnowledgeIndex) {
+        var positions: [ClusterKey: Int] = [:]
+        var aliases = Set<ClusterKey>()
+        for (position, cluster) in merged.clusters.enumerated() {
+            positions[cluster.key] = position
+            aliases.formUnion(cluster.aliases)
+        }
         for cluster in importedIndex.clusters {
-            if let position = merged.clusters.firstIndex(where: { $0.key == cluster.key }) {
+            if let position = positions[cluster.key] {
                 var entry = merged.clusters[position]
-                for alias in cluster.aliases where alias != entry.key && !entry.aliases.contains(alias) {
+                var present = Set(entry.aliases)
+                present.insert(entry.key)
+                for alias in cluster.aliases where present.insert(alias).inserted {
                     entry.aliases.append(alias)
+                    aliases.insert(alias)
                 }
                 if entry.label == nil { entry.label = cluster.label }
                 if entry.starrocksClusterID == nil { entry.starrocksClusterID = cluster.starrocksClusterID }
                 merged.clusters[position] = entry
-            } else if !merged.clusters.contains(where: { $0.aliases.contains(cluster.key) }) {
+            } else if !aliases.contains(cluster.key) {
+                positions[cluster.key] = merged.clusters.count
+                aliases.formUnion(cluster.aliases)
                 merged.clusters.append(cluster)
             }
         }
@@ -309,11 +321,15 @@ public struct BackupKnowledgePlan: Sendable {
     private func mergeDatabaseEntries(into merged: inout KnowledgeIndex) {
         let skipped = Set(databases.filter { $0.status == .skipped }.map(\.key))
         var known = Set(merged.databases.map(\.id))
+        var clusters = Set<ClusterKey>()
+        for cluster in merged.clusters {
+            clusters.insert(cluster.key)
+            clusters.formUnion(cluster.aliases)
+        }
         let keys = importedIndex.databases.map(\.key) + importedDatabases.keys.sorted { $0.fileID < $1.fileID }
         for key in keys where !skipped.contains(key) && known.insert(key.fileID).inserted {
             merged.databases.append(KnowledgeIndex.DatabaseEntry(key: key))
-            let clusterKnown = merged.clusters.contains { $0.key == key.cluster || $0.aliases.contains(key.cluster) }
-            if !clusterKnown { merged.clusters.append(KnowledgeIndex.ClusterEntry(key: key.cluster)) }
+            if clusters.insert(key.cluster).inserted { merged.clusters.append(KnowledgeIndex.ClusterEntry(key: key.cluster)) }
         }
     }
 

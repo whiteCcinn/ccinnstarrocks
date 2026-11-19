@@ -303,6 +303,20 @@ struct BackupFormatTests {
         #expect(throws: BackupError.self) { try BackupFormat.decode(duplicate) }
     }
 
+    @Test func knowledgeBeyondItsLimitsIsRefused() throws {
+        var index = KnowledgeIndex()
+        index.clusters = (0...BackupValidation.maximumClusters).map { KnowledgeIndex.ClusterEntry(key: ClusterKey(rawValue: "sr://h\($0):9030")) }
+        let tooManyClusters = BackupPayload(profiles: [], knowledge: BackupKnowledge(index: index, databases: []))
+        #expect(throws: BackupError.self) { try BackupFormat.decode(try encode(tooManyClusters)) }
+
+        var database = F.knowledge()
+        let evidence = (0...BackupValidation.maximumEvidence).map { Evidence(source: .naming, score: $0) }
+        database.relationships = [Relationship(from: .init(table: "a", columns: ["x"]), to: .init(table: "b", columns: ["y"]), kind: .manyToOne,
+                                               evidence: evidence)]
+        let tooMuchEvidence = BackupPayload(profiles: [], knowledge: BackupKnowledge(index: F.index(), databases: [database]))
+        #expect(throws: BackupError.self) { try BackupFormat.decode(try encode(tooMuchEvidence)) }
+    }
+
     @Test func historyForAProfileNotInTheBackupIsDropped() throws {
         let (payload, _) = samplePayload()
         var orphaned = payload

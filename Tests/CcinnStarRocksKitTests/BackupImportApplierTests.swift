@@ -136,17 +136,62 @@ struct BackupImportApplierTests {
         try BackupHistoryFiles.write([F.historyEntry("SELECT 'mine'", at: 1)], for: mine.id, in: target.historyDirectory)
 
         let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
-        let snapshot = try #require(report.snapshotURL)
+        #expect(report.snapshotURL != nil)
         #expect(target.profiles.count == 3)
         #expect(try target.knowledge.database(F.databaseKey)?.notes.count == 2)
 
-        let restored = target.applier().restore(from: snapshot) { (profiles: [ConnectionProfile]) throws -> Void in target.profiles = profiles }
+        let restored = target.applier().restore(report) { (profiles: [ConnectionProfile]) throws -> Void in target.profiles = profiles }
         #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
         #expect(target.profiles.map(\.id) == [mine.id])
         #expect(target.settings == ["appearance": .string("Light")], "settings the import added are removed again")
         #expect(try target.knowledge.database(F.databaseKey)?.notes.map(\.id) == ["n9"])
         #expect(try target.knowledge.index().projects.isEmpty)
         #expect(try BackupHistoryFiles.read(for: mine.id, in: target.historyDirectory).map(\.sql) == ["SELECT 'mine'"])
+    }
+
+    @Test func restoringLeavesKnowledgeTheSnapshotNeverCapturedAndRemovesWhatTheImportCreated() throws {
+        let (source, _, _) = try sourceMac()
+        let target = BackupTestMac(home: F.newHome)
+        defer { source.remove(); target.remove() }
+        // A database file the index does not list: the export skips it, so the snapshot does not hold it.
+        let unlisted = DatabaseKey(cluster: ClusterKey(rawValue: "sr://fe.other:9030"), catalog: "default_catalog", database: "ssp")
+        var orphan = DatabaseKnowledge(key: unlisted)
+        orphan.notes = [F.note("n7", text: "kept", at: 1)]
+        try SecureFile.write(try KnowledgeStore.encoder.encode(orphan), to: target.knowledge.databaseURL(unlisted))
+
+        let report = target.applier().apply(target.plan(try BackupFormat.decode(try exportAll(source, passphrase: nil))), now: F.date(100))
+        #expect(try target.knowledge.database(F.databaseKey) != nil)
+        let restored = target.applier().restore(report) { (profiles: [ConnectionProfile]) throws -> Void in target.profiles = profiles }
+        #expect(restored.succeeded, "\(restored.failureMessage ?? "")")
+        #expect(try target.knowledge.database(F.databaseKey) == nil, "the database the import created is gone")
+        #expect(try target.knowledge.database(unlisted)?.notes.map(\.id) == ["n7"], "a file the snapshot never held is untouched")
+        #expect(target.profiles.isEmpty && target.settings.isEmpty)
+    }
+
+    @Test func restoringNeverOverflowsARevision() throws {
+        let target = BackupTestMac(home: F.newHome)
+        defer { target.remove() }
+        var index = KnowledgeIndex()
+        index.revision = Int.max
+        let data = try BackupFormat.encode(BackupPayload(profiles: [], knowledge: BackupKnowledge(index: index, databases: [])),
+                                           appVersion: "1.4.0", createdAt: F.referenceDate)
+        let url = target.snapshotDirectory.appendingPathComponent("pre-import-hostile.ccinnstarrocks-backup")
+        try SecureFile.write(data, to: url)
+        var importReport = BackupImportReport()
+        importReport.snapshotURL = url
+        importReport.changedKnowledgeIndex = true
+        let restored = target.applier().restore(importReport) { (_: [ConnectionProfile]) throws -> Void in }
+        #expect(restored.succeeded)
+        #expect(try target.knowledge.index().revision == Int.max)
+    }
+
+    @Test func aStrayControlCharacterInHistoryStillExportsAndRestores() throws {
+        let (source, plain, _) = try sourceMac()
+        defer { source.remove() }
+        try BackupHistoryFiles.write([F.historyEntry("SELECT 1 \u{1B}[0m\u{0B}", at: 2)], for: plain.id, in: source.historyDirectory)
+        let bundle = try BackupFormat.decode(try exportAll(source, passphrase: nil))
+        let entries = try #require(bundle.payload.history?.first { $0.profile == plain.id }).entries
+        #expect(entries.map(\.sql) == ["SELECT 1 \u{FFFD}[0m\u{FFFD}"])
     }
 
     @Test func historyFilesStayReadableByTheHistoryStore() async throws {

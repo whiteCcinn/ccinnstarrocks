@@ -56,13 +56,11 @@ enum BackupHistoryFiles {
         return merged
     }
 
-    /// How many of `imported` the local history does not have yet.
-    static func newEntryCount(local: Set<UUID>, imported: [QueryHistoryEntry]) -> Int {
-        var seen = local
-        var count = 0
-        for entry in imported where seen.insert(entry.id).inserted {
-            count += 1
-        }
-        return count
+    /// How many of `imported` the merge keeps that the local history does not have: entries older than 1,000 newer
+    /// ones fall off the cap again and do not count, so re-importing them changes nothing.
+    static func addedEntryCount(local: [QueryHistoryEntry], imported: [QueryHistoryEntry]) -> Int {
+        let localIDs = Set(local.map(\.id))
+        guard imported.contains(where: { !localIDs.contains($0.id) }) else { return 0 }
+        return merge(local: local, imported: imported).filter { !localIDs.contains($0.id) }.count
     }
 }

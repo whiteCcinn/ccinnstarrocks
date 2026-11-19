@@ -1,7 +1,8 @@
 import Foundation
 
-/// Which sections to export. Profiles are always included; secrets only with a passphrase.
-public struct BackupExportOptions: Sendable {
+/// Which sections to export. Profiles are always included; secrets only with a passphrase. Descriptions and mirrors
+/// never show the passphrase.
+public struct BackupExportOptions: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var includeKnowledge = true
     public var includeSettings = true
     public var includeHistory = false
@@ -10,6 +11,18 @@ public struct BackupExportOptions: Sendable {
     public var passphrase: String?
 
     public init() {}
+
+    public var description: String {
+        "BackupExportOptions(knowledge: \(includeKnowledge), settings: \(includeSettings), history: \(includeHistory), "
+            + "passphrase: \(passphrase == nil ? "none" : "redacted"))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["includeKnowledge": includeKnowledge, "includeSettings": includeSettings, "includeHistory": includeHistory,
+                                "hasPassphrase": passphrase != nil])
+    }
 
     /// Everything an import can change, without secrets: the automatic snapshot written before importing.
     public static var preImportSnapshot: BackupExportOptions {
@@ -64,6 +77,8 @@ public struct BackupExporter {
         let secrets = options.passphrase == nil ? [:] : exportSecrets(warnings: &warnings)
         let data = try BackupFormat.encode(payload, secrets: secrets, passphrase: options.passphrase, appVersion: appVersion, createdAt: now,
                                            iterations: iterations)
+        // Never hand out a file the reader would refuse (an invalid name or path in this Mac's data); the error names it.
+        _ = try BackupFormat.decode(data)
         return BackupExport(data: data, warnings: warnings, secretCount: secrets.count)
     }
 

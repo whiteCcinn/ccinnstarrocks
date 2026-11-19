@@ -141,13 +141,15 @@ enum BackupKnowledgeMerge {
         return (items, added, updated)
     }
 
-    /// Local evidence first, then imported evidence not already present.
+    /// Local evidence first, then imported evidence not already present, up to the limit (local evidence is never
+    /// dropped). Stops at the limit, so a long imported list costs no more than 20 comparisons per item.
     private static func unionOfEvidence(_ local: [Evidence], _ imported: [Evidence]) -> [Evidence] {
         var evidence = local
-        for item in imported where !evidence.contains(item) {
-            evidence.append(item)
+        for item in imported {
+            guard evidence.count < maximumEvidence else { break }
+            if !evidence.contains(item) { evidence.append(item) }
         }
-        return Array(evidence.prefix(maximumEvidence))
+        return evidence
     }
 
     private static func latestEvidence(_ relationship: Relationship) -> Date {

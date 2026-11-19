@@ -9,6 +9,14 @@ enum BackupValidation {
     static let maximumLinks = 100_000
     static let maximumHistoryEntries = 10_000
     static let maximumIdentifierLength = 1_024
+    /// Generous multiples of the knowledge base's own limits; they bound the work a hostile file can cause.
+    static let maximumClusters = 10_000
+    static let maximumAliases = 256
+    static let maximumTables = 50_000
+    static let maximumRelationships = 100_000
+    static let maximumEvidence = 100
+    static let maximumCuratedItems = 50_000
+    static let maximumTombstones = 500_000
 
     static func validate(_ payload: BackupPayload) throws {
         try validateProfiles(payload.profiles)
@@ -70,7 +78,10 @@ enum BackupValidation {
         try require(knowledge.databases.count <= maximumDatabases && index.databases.count <= maximumDatabases, "too many databases")
         try require(index.projects.count <= maximumProjects, "too many projects")
         try require(index.links.count <= maximumLinks, "too many project links")
+        try require(index.clusters.count <= maximumClusters, "too many clusters")
+        try require(index.tombstones.count <= maximumTombstones, "too many deleted items")
         for cluster in index.clusters {
+            try require(cluster.aliases.count <= maximumAliases, "a cluster with too many aliases")
             try requireClusterKey(cluster.key)
             for alias in cluster.aliases { try requireClusterKey(alias) }
             try requireIdentifier(cluster.label ?? "", "cluster label")
@@ -96,8 +107,19 @@ enum BackupValidation {
             try require(database.format == DatabaseKnowledge.formatName, "knowledge of another format")
             try requireDatabaseKey(database.key)
             try require(keys.insert(database.key).inserted, "two knowledge files for \(database.key)")
+            try validateLimits(database)
             for table in database.tables { try requireIdentifier(table.name, "table name") }
         }
+    }
+
+    private static func validateLimits(_ database: DatabaseKnowledge) throws {
+        try require(database.tables.count <= maximumTables, "too many tables in \(database.key)")
+        try require(database.relationships.count <= maximumRelationships, "too many relationships in \(database.key)")
+        let curated: Int = database.notes.count + database.terms.count + database.areas.count
+        try require(curated <= maximumCuratedItems, "too many notes, terms and areas in \(database.key)")
+        try require(database.tombstones.count <= maximumTombstones, "too many deleted items in \(database.key)")
+        let evidenceIsBounded = database.relationships.allSatisfy { $0.evidence.count <= maximumEvidence }
+        try require(evidenceIsBounded, "a relationship with too much evidence in \(database.key)")
     }
 
     static func requireClusterKey(_ key: ClusterKey) throws {
@@ -176,6 +198,56 @@ enum BackupValidation {
             }
             return false
         }
+    }
+
+    /// `json` with every forbidden control character (as `jsonContainsForbiddenControlCharacter` defines them) replaced
+    /// by U+FFFD, so the writer never produces free text the reader refuses (a stray ESC pasted into a statement).
+    static func replacingForbiddenControlCharacters(in json: Data) -> Data {
+        guard jsonContainsForbiddenControlCharacter(json) else { return json }
+        let replacement = Array(#"\ufffd"#.utf8)
+        var output: [UInt8] = []
+        output.reserveCapacity(json.count + 64)
+        json.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Void in
+            var index = 0
+            let count = bytes.count
+            while index < count {
+                let byte = bytes[index]
+                if byte == 0x5C, index + 1 < count {
+                    let escaped = bytes[index + 1]
+                    if escaped == 0x62 || escaped == 0x66 { // \b \f
+                        output.append(contentsOf: replacement)
+                        index += 2
+                        continue
+                    }
+                    if escaped == 0x75, index + 5 < count, let value = hexValue(bytes, from: index + 2) {
+                        if isForbiddenControl(value) {
+                            output.append(contentsOf: replacement)
+                        } else {
+                            output.append(contentsOf: bytes[index..<(index + 6)])
+                        }
+                        index += 6
+                        continue
+                    }
+                    output.append(byte)
+                    output.append(escaped)
+                    index += 2
+                    continue
+                }
+                if byte == 0x7F {
+                    output.append(contentsOf: replacement)
+                    index += 1
+                    continue
+                }
+                if byte == 0xC2, index + 1 < count, (0x80...0x9F).contains(bytes[index + 1]) {
+                    output.append(contentsOf: replacement)
+                    index += 2
+                    continue
+                }
+                output.append(byte)
+                index += 1
+            }
+        }
+        return Data(output)
     }
 
     private static func isForbiddenControl(_ value: UInt32) -> Bool {
